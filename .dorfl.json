@@ -1,0 +1,6 @@
+{
+	"verify": "zig fmt --check . && zig build && zig build test",
+	"harness": "pi",
+	"autoBuild": false,
+	"autoTask": false
+}
