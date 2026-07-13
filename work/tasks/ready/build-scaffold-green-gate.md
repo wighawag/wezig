@@ -1,0 +1,36 @@
+---
+title: Build scaffold — green verify gate
+slug: build-scaffold-green-gate
+spec: wezig-browser
+blockedBy: []
+covers: [5]
+---
+
+## What to build
+
+The thinnest possible task that turns the `verify` gate green and establishes the acceptance loop. Add a `build.zig` (and `build.zig.zon`) plus a minimal library entrypoint (e.g. `src/root.zig`) exposing one trivial function, and one passing unit test wired into `zig build test`. No C dependencies, no HTML/CSS/layout/paint. When done, `zig fmt --check . && zig build && zig build test` (the `.dorfl.json` verify gate, currently red because no `build.zig` exists) passes end to end. Everything else in v0 builds on top of this.
+
+## Acceptance criteria
+
+- [ ] `zig build` succeeds from a clean checkout.
+- [ ] `zig build test` runs and a trivial unit test passes.
+- [ ] `zig fmt --check .` passes (all committed Zig is formatted).
+- [ ] The full `verify` gate `zig fmt --check . && zig build && zig build test` is green.
+- [ ] No C library is linked (pure Zig; the first C binding is a later task).
+- [ ] Tests cover the new behaviour (the trivial function has a passing test), mirroring the repo's test style.
+
+## Blocked by
+
+- None — can start immediately.
+
+## Prompt
+
+> Goal: give wezig a working Zig build + test acceptance loop from day one. The repo is a clean-slate Zig project (Zig 0.17.0-dev via zvm on PATH); there is no `build.zig` yet, so the `.dorfl.json` verify gate (`zig fmt --check . && zig build && zig build test`) is RED by design. Your job is to make it green with the absolute minimum: a `build.zig`, a `build.zig.zon`, a minimal library/module entrypoint with one trivial function, and one passing unit test wired into `zig build test`. Do NOT add any C dependency, HTML/CSS parsing, layout, or paint — those are separate later tasks that depend on this one.
+>
+> Domain vocabulary is in `CONTEXT.md`; the work contract is `work/protocol/WORK-CONTRACT.md`. Keep it idiomatic for the installed Zig version (check `zig version`; the build API changes between Zig releases, so match what 0.17.0-dev expects). "Done" = a fresh checkout runs `zig build` and `zig build test` green and `zig fmt --check .` is clean.
+>
+> FIRST, check this task against current reality (it is a launch snapshot and may have DRIFTED): confirm no `build.zig` exists yet and the gate is still red for the reason stated. If something already landed a build, reconcile rather than clobber.
+>
+> Note on `build.zig` as a shared file: later tasks register their modules and (for paint) link SDL3 in this same `build.zig`. Structure it so adding a module/dependency later is an additive edit, not a rewrite — this keeps `build.zig` from becoming a merge-conflict point if tasks are ever built off the strict linear chain.
+>
+> RECORD non-obvious in-scope decisions durably (module layout choice, the `build.zig` structure you adopt for this Zig version) — a short `## Decisions` note in the done record or a module doc comment is enough; reach for an ADR only if a choice is hard to reverse and surprising.

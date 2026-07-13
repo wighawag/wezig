@@ -70,22 +70,7 @@ The v0 slice deliberately proves the rendering core before any Ethereum, IPFS, o
 - **`humanOnly: true`** — a human must drive the TASKING of this spec. It is a serious-browser vision with security-critical (wallet key custody, signing) and architecture-foundational (process/sandbox model, JS-engine choice) forks; an agent must not auto-fan this into tasks. This flag governs tasking only and does not pre-set the gate of individual tasks (the tasker decides each task's gate from its own build-nature — e.g. a v0 `build.zig` chore can be fully agent-buildable).
 - **`needsAnswers: true`** — the six open questions above block auto-tasking until resolved. The v0 stories (1–6) are well-defined and could be tasked once a human clears tasking, but the beyond-v0 stories depend on the answers, so the spec as a whole is flagged incomplete rather than falsely complete.
 
-## Implementation Decisions
-
-Decisions fixed at launch (seed for tasking; trimmed by `to-task` later):
-
-- **Language: Zig** (fixed by the originating idea). C interop is a first-class reason for the choice.
-- **Bind C libraries; do not reimplement the hard graphics primitives.** Rasterization, font shaping, glyph rendering, windowing, and the GPU stack come from mature C/C++ libraries exposed through Zig. Concrete picks are open question 6; the strategy itself is decided.
-- **Reuse of existing Zig prototypes is on the table** rather than hand-writing every pillar: `zss` (CSS parser / layout / renderer), `zigquery` (HTML parser + CSS selectors), `kiesel` (JS engine). Whether/how much to adopt each is a per-milestone decision; the openness to reuse is decided.
-- **v0 excludes** JavaScript, Canvas/WebGL/WebGPU, IPFS, and the wallet. v0 is HTML+CSS layout and paint to a window, plus the `build.zig`/gate scaffolding.
-- **WebGPU, when it arrives, is expected to be the cleanest GPU target** (standard `webgpu.h` C API; existing Zig bindings via `zgpu`/wgpu-native), likely sequenced before WebGL and ahead of full Canvas 2D conformance. Recorded as direction, not a v0 commitment.
-
-## Testing Decisions
-
-- Test at the **highest stable seams**: for v0, prefer "given this HTML+CSS input, the produced box tree has these positions/sizes" (layout seam) and "the painted output matches a reference" (paint seam) over asserting internal parser structures.
-- The **`verify` gate** (`zig fmt --check . && zig build && zig build test`) is the acceptance backbone; the first task must land a `build.zig` that makes `zig build` / `zig build test` real (the gate is red until then, by design).
-- Golden/reference-image tests are the natural fit for the paint milestone; keep the v0 HTML/CSS subset small enough that references are maintainable.
-- Prior art to lean on for test shape: `zss` (its demo/tests exercise CSS layout + render in Zig).
+> **The v0 slice has been TASKED.** The launch-time Implementation and Testing detail moved into the v0 tasks (`work/tasks/backlog/`: build-scaffold-green-gate, diagnostics-sink, html-parse-subset, css-parse-and-cascade, layout-block-inline, paint-sdl3-stb-window, document-v0-subset-limits) and into `docs/adr/0001-v0-thin-subset-behind-swappable-seams.md`. The six strategic open questions above remain deferred (they gate the beyond-v0 stories 7-12, which are NOT tasked).
 
 ## Out of Scope
 
