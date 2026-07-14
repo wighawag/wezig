@@ -11,6 +11,10 @@ pub const branding = @import("branding.zig");
 /// The structured diagnostics channel every v0 subset boundary reports through.
 pub const diagnostics = @import("diagnostics.zig");
 
+/// The v0 HTML parser: fixed-subset HTML in, DOM tree out, behind a swappable
+/// `Tokenizer | TreeBuilder` seam.
+pub const html = @import("html.zig");
+
 /// Trivial placeholder so `zig build test` has real behaviour to assert on.
 /// Replaced/extended by the first real subsystem task.
 pub fn add(a: i32, b: i32) i32 {
@@ -25,4 +29,6 @@ test {
     // Pull in the branding module's tests.
     std.testing.refAllDecls(@This());
     _ = branding;
+    _ = diagnostics;
+    _ = html;
 }
