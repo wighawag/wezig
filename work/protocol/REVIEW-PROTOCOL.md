@@ -52,6 +52,9 @@ This lens also owns **acceptance-criteria conformance** for code:
 Do the artifacts COMPOSE, and do they obey the contract?
 
 - **Composition:** handoffs (one task ships a stub another fills), shared helpers with no owner, two tasks editing the SAME file/command in parallel (a merge conflict waiting to happen — should carry a `blockedBy` to serialise), one task deleting another's live tooling, cross-task side-effects.
+- **Wide-refactor sub-checklist** (a pervasive rename / identifier cutover split into a `rename-*` chain — complements `TASKING-PROTOCOL.md` §3a):
+  - **Expand-first / per-batch compilability.** For EACH batch, verify it is either **indirected-safe** (the renamed identifier is read through a key/indirection so a hard swap keeps `pnpm -r build` green in isolation) OR **expand-first** (a prior batch added the new form beside the old across the whole non-indirected surface, this batch is an additive migrate, a later contract batch removes the aliases). A linear sequence of hard-swap `rename-*` batches over NON-indirected identifiers cannot compile per-batch and must be restructured into expand → migrate → contract. (Motivation: the spec→spec identity chain shipped review-clean, yet batch 2 stopped at build time — `fm.spec` / `'spec'` were non-indirected, read at ~28 call sites, and could not compile alone.)
+  - **File ownership per clause.** For EACH acceptance clause of EACH batch, identify which file(s) it must change and verify THIS batch owns them; a clause whose file lives in another batch is a scope-fence violation and must be moved to the batch that owns the file. (Motivation: batch 2 carried a `do spec:` / `advance spec:` verb-dispatch clause, but the dispatcher lives in `do.ts` / `advance.ts` / `advance-drivers.ts` / `do-autopick.ts` — batch 4's files — so the clause was unsatisfiable inside batch 2's scope fence and the `do` agent correctly STOPPED.)
 - **Contract conformance (assume these rules; flag violations):**
   - **status = folder**, never a frontmatter field; **one file per item**; **no shared index/manifest**.
   - **content-derived slug**, never a counter; **camelCase** field names (`humanOnly`, `needsAnswers`, `blockedBy`, `taskedAfter`).
@@ -111,7 +114,7 @@ Any unrecognised field is ignored by the parser; the caller routes on `verdict`/
 
 ### How callers route your verdict (not your job — for orientation only)
 
-- a **review GATE** routes a `block` → set `needsAnswers: true` on the artifact (question in its body) or mark its per-item lock `state: stuck` (needs-attention); `approve` → let it land / auto-merge.
+- a **review GATE** routes a `block` → set `needsAnswers: true` on the artifact (question in its body) or surface a `work/questions/<type>-<slug>.md` sidecar + `needsAnswers: true` (needs-attention; post `retire-stuck-lock-state` the lock is never left `stuck` — that state is retired); `approve` → let it land / auto-merge.
 - a **conductor** (e.g. `drive-tasks`/`orchestrate`) routes a `block` → into its stuck-set / batched questions for the human; `approve` → merge / advance.
 
 ## Scope fence
