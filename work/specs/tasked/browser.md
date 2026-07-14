@@ -29,16 +29,16 @@ All six landed as tasks (now in `work/tasks/done/`: build-scaffold-green-gate, d
 
 ## Successor specs
 
-The wezig vision beyond v0 is now carried by three logically-grouped, separately-taskable specs (each atomically taskable once its own open questions are answered), sequenced behind ADR-0005's `Renderer` seam:
+The wezig vision beyond v0 is now carried by three logically-grouped, separately-taskable **EXPLORATION** specs. Each is exploration-scoped ON PURPOSE: none of these is one-spec build work (the native renderer alone is decade-scale), so each is scoped to REACHING CONFIDENCE — pin the seam/interface, spike the risky part end-to-end on the narrowest real case, resolve its open questions, and emit a de-risked BUILD PLAN. The capability BUILDS become follow-on specs, written once the exploration says "yes, this way". (This reframe is itself captured as a `../dorfl` observation: too-big-to-build-task -> exploration spec.) All are sequenced behind ADR-0005's `Renderer` seam:
 
-- **`usable-browser-webview-shell`** — ship a USABLE browser first: a `Renderer` seam + a system-webview backend (WebKitGTK) + the chrome/shell (window, tabs, URL bar, navigation), so wezig is a real, usable browser early while the native renderer catches up. `taskedAfter: [browser]`.
-- **`native-renderer-conformance`** — grow wezig's OWN renderer past the v0 subset toward matching existing browsers (real HTML parsing, full CSS, floats/flex/grid/tables/positioning, real text shaping, networking), behind the same `Renderer` seam so it swaps in progressively. `taskedAfter: [browser]`.
-- **`web3-native-capabilities`** — the differentiators: a native Ethereum provider (EIP-1193) and native IPFS resolution, specified against the seam's script-bridge + request-interception hooks so they work whichever backend renders the page. `taskedAfter: [usable-browser-webview-shell]`.
+- **`explore-webview-shell`** — pin the `Renderer` seam and prove it end-to-end (one real page loads + is interactive via WebKitGTK behind the seam), while LEARNING the shell unknowns (tabs and how they'd meet the seam, GTK leakage, the process model). Deliverable: a pinned seam + spike + a usable-browser build plan. `taskedAfter: [browser]`.
+- **`explore-native-renderer`** — pick the conformance target, pin the C-libraries by spiking the load-bearing ones (real text shaping behind `PaintBackend`; a networking fetch; the progressive-swap routing), evaluate the JS write-vs-bind fork. Deliverable: target + pinned libs + spikes + a sliced build plan. `taskedAfter: [browser]`.
+- **`explore-web3-capabilities`** — prove an EIP-1193 provider attaches at the seam (round-trip one `eth_requestAccounts`) and one `ipfs://` fetch+verify through the interception hook, and DECIDE the wallet security model (no real key). Deliverable: proof + a decided security model + a build plan. `taskedAfter: [explore-webview-shell]`.
 
 ## Out of Scope (of THIS v0 spec)
 
 - **v0 explicitly excludes** JavaScript execution, Canvas/WebGL/WebGPU, IPFS resolution, the Ethereum wallet, networking, navigation, and any browser chrome. Those are the successor specs above, not this slice.
-- **Full web-platform conformance** is not a v0 goal; its target is an open question owned by `native-renderer-conformance`.
+- **Full web-platform conformance** is not a v0 goal; its target is an open question owned by `explore-native-renderer`.
 - **Writing our own rasterizer / font shaper / GPU driver** is out of scope by strategy — bound from C libraries.
 
 ## Further Notes
