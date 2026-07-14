@@ -37,10 +37,8 @@ archives:
       {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_
       {{- .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}
     files:
-      # Only files that exist today, so the first release cannot fail on a
-      # missing bare filename. README.md and LICENSE do NOT exist yet: once you
-      # add them (the repo's default license is AGPL-3.0 per AGENTS.md), add
-      # `README.md` and `LICENSE` here so they ship in the archive too.
+      - README.md
+      - LICENSE
       - docs/adr/*.md
       - docs/v0-subset.md
 
