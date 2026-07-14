@@ -23,6 +23,14 @@ pub const css = @import("css.zig");
 /// out, driving text line-breaking through the `PaintBackend` measurement seam.
 pub const layout = @import("layout.zig");
 
+/// The offscreen RGBA paint target + a minimal PNG codec (for golden-image
+/// tests) the paint backend renders into.
+pub const surface = @import("surface.zig");
+
+/// The v0 paint backend: `StbSoftwareBackend` (stb_truetype glyphs + software
+/// raster) realising the `PaintBackend` seam, plus `paintTree`.
+pub const paint = @import("paint.zig");
+
 /// Trivial placeholder so `zig build test` has real behaviour to assert on.
 /// Replaced/extended by the first real subsystem task.
 pub fn add(a: i32, b: i32) i32 {
@@ -41,4 +49,6 @@ test {
     _ = html;
     _ = css;
     _ = layout;
+    _ = surface;
+    _ = paint;
 }

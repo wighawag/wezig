@@ -6,8 +6,14 @@
     .fingerprint = 0xbfa7056068d54a89, // Changing this has security and trust implications.
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
-        // Later tasks add C-library bindings (SDL3, etc.) here via
-        // `zig fetch --save`. Keep additions additive.
+        // SDL3 (window/input/present) ported to the Zig build system, built
+        // from source so there is NO system SDL dependency for a reproducible
+        // gate/CI build (see ADR-0003). Linked into the app executable only;
+        // the library + headless golden tests do not need it.
+        .sdl = .{
+            .url = "git+https://github.com/castholm/SDL.git#1b67d371a531ecb0499d4b80a865631c299f472a",
+            .hash = "sdl-0.5.2+3.4.12-SDL--qPKpwHc40bqAlYs7W9pXJVyLwsGDNa4shNXbOZr",
+        },
     },
     .paths = .{
         "build.zig",

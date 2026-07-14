@@ -1,2 +1,7 @@
 .zig-cache/
 zig-out/
+
+# The SDL3 build-system port (castholm/SDL) unpacks its bundled Linux system
+# dependencies into this directory during `zig build`; it is a regenerated
+# build artifact, not source.
+zig-pkg/
