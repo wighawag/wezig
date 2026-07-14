@@ -16,8 +16,10 @@
 //!     `width` and `height`.
 //!   - UNITS: `px` and `%` (percentages resolve against the containing block;
 //!     `%` is honoured for `width` only in v0). Any other unit
-//!     (`em`/`rem`/`vw`/`vh`/`ch`/…) emits `unsupported_unit` and the length
-//!     falls back to `auto`/`0`.
+//!     (`em`/`rem`/`vw`/`vh`/`ch`/…) emits `unsupported_unit` and falls back:
+//!     a length falls back to `auto`/`0`, and a `font-size` falls back to the
+//!     16px default. The `unsupported_unit` contract is UNIFORM across both
+//!     length and font-size resolution.
 //!
 //! ## Documented v0 limits (each surfaced via a diagnostic or the limits doc)
 //!
@@ -392,10 +394,10 @@ const Engine = struct {
     }
 
     /// The resolved `Font` for an element from its computed styles.
-    fn fontOf(self: *Engine, node: *const Node) Font {
+    fn fontOf(self: *Engine, node: *const Node) !Font {
         const s = self.styled.styleFor(node);
         if (s) |st| {
-            const size = parseFontSize(st.get(.font_size));
+            const size = try parseFontSize(st.get(.font_size), self.diag, self.gpa);
             return .{
                 .family = st.get(.font_family),
                 .size_px = size,
@@ -407,13 +409,13 @@ const Engine = struct {
 
     /// The font a top-level inline node starts in: its own element font, or its
     /// parent element's font for a bare text node.
-    fn fontOfContext(self: *Engine, node: *const Node) Font {
+    fn fontOfContext(self: *Engine, node: *const Node) !Font {
         switch (node.data) {
-            .element => return self.fontOf(node),
+            .element => return try self.fontOf(node),
             .text => {
                 if (node.parent) |p| {
                     if (p.data == .element and !std.mem.eql(u8, p.data.element.tag, "#document")) {
-                        return self.fontOf(p);
+                        return try self.fontOf(p);
                     }
                 }
                 return default_font;
@@ -436,16 +438,28 @@ fn isBlockDisplay(display: []const u8) bool {
     return std.ascii.eqlIgnoreCase(display, "block");
 }
 
-/// Font-size resolution for a run's font. Only `px` is meaningful for a run's
-/// pixel size; `%`/`em` etc. are not resolved in v0 and fall back to 16px.
-fn parseFontSize(value: []const u8) f32 {
+/// Font-size resolution for a run's font. Only `px` (and a bare number) is
+/// meaningful for a run's pixel size; any other unit (`%`/`em`/`rem`/… or a
+/// keyword like `larger`) is unsupported in v0: it emits `unsupported_unit`
+/// (via `diag`, same severity/shape as `parseLength`) and falls back to the
+/// 16px default. This mirrors the emit-then-fallback contract `parseLength`
+/// uses, so the `unsupported_unit` diagnostic is uniform across length paths.
+fn parseFontSize(value: []const u8, diag: *Diagnostics, gpa: std.mem.Allocator) !f32 {
     const v = std.mem.trim(u8, value, " \t");
     var split: usize = v.len;
     while (split > 0 and std.ascii.isAlphabetic(v[split - 1])) : (split -= 1) {}
-    const f = std.fmt.parseFloat(f32, std.mem.trim(u8, v[0..split], " \t")) catch return 16;
     const unit = v[split..];
+    const f = std.fmt.parseFloat(f32, std.mem.trim(u8, v[0..split], " \t")) catch {
+        // A non-numeric font-size (e.g. a keyword like `larger`) is unsupported.
+        try diag.add(gpa, .warning, .unsupported_unit, null, "unsupported CSS unit (only px and % supported in v0)");
+        return 16;
+    };
     if (unit.len == 0 or std.ascii.eqlIgnoreCase(unit, "px")) return f;
-    return 16; // non-px font sizes are not resolved in v0.
+
+    // Any other font-size unit (em/rem/vw/vh/ch/pt/% or keyword) is unsupported
+    // in v0: emit the diagnostic, then fall back to the 16px default.
+    try diag.add(gpa, .warning, .unsupported_unit, null, "unsupported CSS unit (only px and % supported in v0)");
+    return 16;
 }
 
 /// Lay out `styled` into a box tree sized to a viewport of `viewport_width`
@@ -619,7 +633,7 @@ fn layoutInline(
         .line_descent = 0,
         .line_boxes = .empty,
     };
-    for (nodes) |node| try liner.addNode(node, engine.fontOfContext(node));
+    for (nodes) |node| try liner.addNode(node, try engine.fontOfContext(node));
     try liner.finishLine();
     container.dims.height = liner.cursor_y - container.dims.y;
 }
@@ -654,7 +668,7 @@ const LineLayout = struct {
                     if (std.ascii.eqlIgnoreCase(el.tag, "br")) try self.forceBreak();
                     return;
                 }
-                const child_font = self.engine.fontOf(node);
+                const child_font = try self.engine.fontOf(node);
                 for (el.children.items) |child| try self.addNode(child, child_font);
             },
         }
@@ -1006,6 +1020,51 @@ test "unsupported unit emits unsupported_unit and the length falls back" {
         if (e.code == .unsupported_unit) found = true;
     }
     try testing.expect(found);
+}
+
+test "font-size with an unsupported unit emits unsupported_unit and falls back to 16px" {
+    const gpa = testing.allocator;
+    var diag = Diagnostics.init(gpa);
+    defer diag.deinit(gpa);
+
+    // `2em` font-size is unsupported in v0: it emits unsupported_unit and the
+    // run's font falls back to the 16px default. Stub advance 0.5*size, so the
+    // one-char word "x" measures at 0.5*16 = 8px, proving the 16px fallback.
+    const css_src = "p { font-size: 2em; }";
+    var fx = try layoutFixture(gpa, "<body><p>x</p></body>", css_src, 800, &diag);
+    defer fx.deinit();
+
+    var texts: std.ArrayList(*const Box) = .empty;
+    defer texts.deinit(gpa);
+    try collectTextBoxes(fx.tree.root, &texts, gpa);
+    try testing.expectEqual(@as(usize, 1), texts.items.len);
+    // Font fell back to 16px (not resolved from `2em`): width = 1 * 0.5 * 16 = 8.
+    try testing.expectEqual(@as(f32, 16), texts.items[0].run.?.font.size_px);
+    try testing.expectEqual(@as(f32, 8), texts.items[0].dims.width);
+
+    // The unsupported unit was reported through the Diagnostics sink.
+    var found = false;
+    for (diag.entries()) |e| {
+        if (e.code == .unsupported_unit) found = true;
+    }
+    try testing.expect(found);
+}
+
+test "font-size in px (and a bare number) emits no diagnostic" {
+    const gpa = testing.allocator;
+    var diag = Diagnostics.init(gpa);
+    defer diag.deinit(gpa);
+
+    // A `px` font-size resolves as before and emits nothing.
+    var fx = try layoutFixture(gpa, "<body><p>x</p></body>", "p { font-size: 20px; }", 800, &diag);
+    defer fx.deinit();
+
+    var texts: std.ArrayList(*const Box) = .empty;
+    defer texts.deinit(gpa);
+    try collectTextBoxes(fx.tree.root, &texts, gpa);
+    try testing.expectEqual(@as(usize, 1), texts.items.len);
+    try testing.expectEqual(@as(f32, 20), texts.items[0].run.?.font.size_px);
+    try testing.expectEqual(@as(usize, 0), diag.entries().len);
 }
 
 test "baseline alignment: runs of different sizes share a line baseline" {
