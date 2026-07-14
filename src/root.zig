@@ -19,6 +19,10 @@ pub const html = @import("html.zig");
 /// to DOM nodes out, behind a `Selector`-AST seam and the real cascade.
 pub const css = @import("css.zig");
 
+/// The v0 layout engine: styled DOM in, a box tree with real positions/sizes
+/// out, driving text line-breaking through the `PaintBackend` measurement seam.
+pub const layout = @import("layout.zig");
+
 /// Trivial placeholder so `zig build test` has real behaviour to assert on.
 /// Replaced/extended by the first real subsystem task.
 pub fn add(a: i32, b: i32) i32 {
@@ -36,4 +40,5 @@ test {
     _ = diagnostics;
     _ = html;
     _ = css;
+    _ = layout;
 }
