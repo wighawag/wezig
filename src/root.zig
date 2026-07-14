@@ -15,6 +15,10 @@ pub const diagnostics = @import("diagnostics.zig");
 /// `Tokenizer | TreeBuilder` seam.
 pub const html = @import("html.zig");
 
+/// The v0 CSS parser + cascade: fixed-subset CSS in, computed styles attached
+/// to DOM nodes out, behind a `Selector`-AST seam and the real cascade.
+pub const css = @import("css.zig");
+
 /// Trivial placeholder so `zig build test` has real behaviour to assert on.
 /// Replaced/extended by the first real subsystem task.
 pub fn add(a: i32, b: i32) i32 {
@@ -31,4 +35,5 @@ test {
     _ = branding;
     _ = diagnostics;
     _ = html;
+    _ = css;
 }
