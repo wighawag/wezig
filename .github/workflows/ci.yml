@@ -1,0 +1,35 @@
+name: ci
+
+# CI runs the acceptance gate on every push to main and on every pull request,
+# so a regression is caught here, not only by a human driving locally. This is
+# distinct from release.yml (tag-triggered build+publish via goreleaser):
+# CI = every push/PR gate; release = cut a versioned build. They do not share a job.
+#
+# The gate below mirrors `dorfl.json` `verify` (fmt check + build + test). The
+# local gate runs it via `zvm run 0.16.0 ...`; CI pins the same Zig version with
+# setup-zig and runs `zig ...` directly, so the STEPS are identical even though
+# the launcher differs. Keep the pinned version in sync with build.zig.zon's
+# minimum_zig_version.
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: "0.16.0"
+
+      - name: Run the dorfl.json verify gate (fmt + build + test)
+        run: zig fmt --check . && zig build && zig build test

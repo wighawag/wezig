@@ -1,0 +1,44 @@
+name: release
+
+# Cut a release by pushing a version tag, e.g.:
+#   git tag v0.1.0 && git push origin v0.1.0
+# goreleaser (native Zig builder) cross-compiles the Linux binaries
+# (amd64, arm64), archives the wezig binary + docs, builds checksums, generates
+# the changelog from the conventional-commit history, and publishes them to the
+# GitHub Release for the tag.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  goreleaser:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # goreleaser needs full history + tags for the changelog
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          # Pinned to the repo's minimum_zig_version (build.zig.zon). Keep in sync.
+          version: "0.16.0"
+
+      - name: Run the acceptance gate (fmt + build + test)
+        # Same gate as dorfl.json verify / ci.yml, so a tag build can't ship a
+        # red tree.
+        run: zig fmt --check . && zig build && zig build test
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

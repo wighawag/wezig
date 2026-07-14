@@ -1,0 +1,69 @@
+# goreleaser config for wezig, using GoReleaser's native Zig builder (v2.5+,
+# `builder: zig`): it runs `zig build` and cross-compiles per target. Mirrors the
+# sibling anonctl's proven structure (version 2, archives/checksum/snapshot/
+# changelog/release blocks), adapted from Go to Zig and to wezig's single binary.
+#
+# TARGET MATRIX: Linux amd64 + arm64 only, for now. The `wezig` executable links
+# SDL3 BUILT FROM SOURCE (ADR-0003), whose window/input backends are per-OS; Zig
+# can cross-compile it, but macOS/Windows targets are NOT yet verified to build
+# green here, so (mirroring anonctl's "ship only what actually builds" rule) they
+# are omitted until proven. Add `x86_64-windows`, `aarch64-macos`, etc. to
+# `targets` once a snapshot build (`goreleaser r --snapshot --clean`) is green for
+# them.
+version: 2
+
+project_name: wezig
+
+builds:
+  - id: wezig
+    builder: zig
+    binary: wezig
+    # Zig-format targets (GoReleaser maps them to GOOS/GOARCH for templates).
+    targets:
+      - x86_64-linux-gnu
+      - aarch64-linux-gnu
+    flags:
+      # ReleaseSafe keeps runtime safety checks in shipped binaries (the v0
+      # engine is young; a safety-checked release is the right default). Switch
+      # to --release=fast later if profiling calls for it.
+      - --release=safe
+
+archives:
+  - id: wezig
+    ids:
+      - wezig
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_
+      {{- .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}
+    files:
+      # Only files that exist today, so the first release cannot fail on a
+      # missing bare filename. README.md and LICENSE do NOT exist yet: once you
+      # add them (the repo's default license is AGPL-3.0 per AGENTS.md), add
+      # `README.md` and `LICENSE` here so they ship in the archive too.
+      - docs/adr/*.md
+      - docs/v0-subset.md
+
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  # The changelog is generated FROM the git history. Every task in this repo
+  # commits a conventional-commit subject (feat:/fix:/…), so releases get a
+  # clean, grouped changelog with no per-change changeset files to maintain.
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^task:"
+      - "Merge pull request"
+      - "Merge branch"
+
+release:
+  draft: false
+  prerelease: auto

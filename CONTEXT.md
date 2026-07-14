@@ -34,7 +34,8 @@ When the build scaffold lands (`build-scaffold-green-gate`), BOTH names are defi
 
 Standing per-change rules agents must follow in this repo.
 
-<!-- e.g. "Every change requires a changeset (`pnpm changeset`)" / a CHANGELOG fragment / a news entry. Add yours here, or delete this section. For enforcement, wire your own check into the `dorfl.json` `verify` gate. -->
+- **Conventional-commit subjects.** Every change commits with a conventional-commit subject (`feat:`, `fix:`, `docs:`, `test:`, `chore:`, optionally scoped e.g. `fix(app): …`). This is load-bearing: releases and the changelog are generated FROM the git history by GoReleaser (`.goreleaser.yaml`), so there are NO per-change changeset files to maintain. `docs:`/`test:`/`chore:`/`task:` subjects are filtered out of the changelog; `feat:`/`fix:` are what users see.
+- **Releasing.** Cut a release by pushing a version tag (`git tag vX.Y.Z && git push origin vX.Y.Z`). The `release` workflow runs the acceptance gate, then GoReleaser (native Zig builder) cross-compiles the Linux binaries, archives them with the docs, builds checksums, generates the changelog from the commits since the last tag, and publishes a GitHub Release. Bump `build.zig.zon`'s `.version` to match the tag. The macOS/Windows targets are omitted from `.goreleaser.yaml` until a snapshot build is verified green for them (SDL3 is built from source per target).
 
 ## Skills this repo uses
 
