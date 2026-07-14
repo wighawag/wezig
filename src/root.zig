@@ -8,6 +8,9 @@ const std = @import("std");
 /// The project's two swappable name identifiers (single source of truth).
 pub const branding = @import("branding.zig");
 
+/// The structured diagnostics channel every v0 subset boundary reports through.
+pub const diagnostics = @import("diagnostics.zig");
+
 /// Trivial placeholder so `zig build test` has real behaviour to assert on.
 /// Replaced/extended by the first real subsystem task.
 pub fn add(a: i32, b: i32) i32 {
