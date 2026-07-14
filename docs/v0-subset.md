@@ -63,7 +63,7 @@ Exactly these ten properties are supported. Each carries an explicit `inherited`
 | --- | --- | --- |
 | `display` | no | `inline` (but seeded per element by the default-`display` table, below) |
 | `color` | yes | `black` |
-| `background-color` | no | `transparent` |
+| `background-color` [^box-colour] | no | `transparent` |
 | `font-family` | yes | `serif` |
 | `font-size` | yes | `16px` |
 | `font-weight` | yes | `normal` |
@@ -77,6 +77,8 @@ Any other property name (e.g. `border`, `border-width`, `display: flex`'s peers,
 Values are carried through the cascade as RAW trimmed strings. The cascade resolves WHICH declaration wins and inheritance; it does not parse lengths, colours, or units. Length/unit interpretation (and the `unsupported_unit` diagnostic) happens in layout (section 3), which reads these computed strings.
 
 Note: `margin` and `padding` are the box-model shorthands; there are no per-side longhands (`margin-top`, `padding-left`, ...) in the supported-property set, and there is no `border-width` property, so borders are 0 in v0 (the box model reserves the field for later).
+
+[^box-colour]: **`background-color` is parsed and cascaded, but NOT painted from the cascade in v0** (and the same holds for `color` as a BOX fill). The painter draws only TEXT from computed styles; block / inline / anonymous boxes are left transparent (`src/paint.zig`, `paintBox`). A real `<div style="background-color: red">` does NOT paint red from the cascade alone in v0. Box background and border colours must be supplied above the paint seam (`PaintStyle` / the golden fixtures); they are not yet resolved from computed styles end-to-end. See the layout exclusion in section 3.
 
 ### Supported selectors
 
@@ -128,7 +130,7 @@ v0's layout turns the styled DOM into a box tree with real positions and sizes. 
 
 - **Block flow.** Block-level boxes stack vertically, each filling its containing block's content width unless `width` says otherwise.
 - **Inline flow with wrapping.** Text and inline boxes flow into line boxes and WRAP at the containing block's content width. Line boxes are baseline-aligned (a line's height is `max(ascent) + max(descent)` over its runs). A `<br>` forces a line break. Whitespace-only text between block boxes is collapsed away (generates no box).
-- **The full box model.** Content, padding, border, and margin edges are all honoured, plus `width` and `height`. (Border WIDTHS are 0 in v0 because there is no `border-width` property; the edges exist in the box model for later.)
+- **The full box model.** Content, padding, border, and margin edges are all honoured, plus `width` and `height`. (Border WIDTHS are 0 in v0 because there is no `border-width` property; the edges exist in the box model for later. Box background and border COLOURS are not painted from the cascade either; see the exclusion below.)
 - **Text runs carry their resolved font.** A text run crossing the paint seam carries its resolved `Font` (family / size / weight) from the cascade's computed styles; shaping and measurement live below the seam, and layout never re-resolves font properties.
 
 ### Supported units
@@ -153,6 +155,7 @@ These are NOT supported in v0. Where a construct is expressed as an unsupported 
 - **Static positioning only.** `position` is an unsupported property (`unknown_property`); there is no relative / absolute / fixed / sticky positioning. Everything is in normal static flow.
 - **No flex / grid / table layout.** `display: flex`, `display: grid`, and table layout do not exist; `display` values other than `block` / `inline` are carried as strings but produce inline/block flow only (any element whose `display` is not `block` is laid out inline). There is no `<table>` element in the HTML allowlist either.
 - **No overflow scrolling.** `overflow` is an unsupported property (`unknown_property`); content is neither clipped nor scrolled.
+- **Box background-color and border colours are not cascaded end-to-end.** Only TEXT is painted from computed styles in v0. The painter (`src/paint.zig`, `paintBox`) leaves block / inline / anonymous boxes transparent; `background-color` is parsed and cascaded (section 2) but never reaches the raster from the cascade, and there is no `border-*` colour property at all. Box background and border colours the golden fixtures show are supplied above the paint seam (`PaintStyle`), NOT resolved from the box's computed styles. So a `<div style="background-color: red">` renders transparent in v0. This is a known v0 limit, not a bug (threading box colours through layout into the box tree is scoped as a v0.1 follow-up); it has no diagnostic code (the property parses and cascades cleanly, it is simply not consumed by the painter).
 - **No `%` height, and no `%` for `margin` / `padding`.** `%` is honoured for `width` only. A `%` `height`, `margin`, or `padding` is not supported and resolves to the fallback (`auto`/`0`); a `%` on a non-`width` length does not raise `unsupported_unit` (it is a supported unit used in an unsupported place, and falls back silently).
 
 ## 4. Diagnostic-code map
@@ -172,3 +175,4 @@ Limits with NO diagnostic code (they are silent drops or absent features, not re
 - **Non-allowlisted attributes** (section 1) are silently dropped; there is no code for them in v0.
 - **No margin collapsing** (section 3) is a layout behaviour, not a rejected input.
 - **`%` height / margin / padding** (section 3) fall back silently (a supported unit used where v0 does not apply it), without `unsupported_unit`.
+- **Box background / border colours not cascaded end-to-end** (sections 2 and 3): `background-color` parses and cascades cleanly, it is simply not consumed by the painter, so no diagnostic fires.
