@@ -12,13 +12,13 @@ The thinnest possible task that turns the `verify` gate green and establishes th
 
 ## Acceptance criteria
 
-- [ ] `zig build` succeeds from a clean checkout.
-- [ ] `zig build test` runs and a trivial unit test passes.
-- [ ] `zig fmt --check .` passes (all committed Zig is formatted).
-- [ ] The full `verify` gate `zig fmt --check . && zig build && zig build test` is green.
-- [ ] No C library is linked (pure Zig; the first C binding is a later task).
-- [ ] Tests cover the new behaviour (the trivial function has a passing test), mirroring the repo's test style.
-- [ ] Both name identifiers are defined once, each swappable by a single-line edit, and no other file hard-codes either literal (see `CONTEXT.md` § Naming): a `code_name` constant (`wezig` today) matched by `build.zig.zon`'s `.name`, and an `app_name` constant for the user-facing display name — e.g. both in `src/branding.zig`.
+- [x] `zig build` succeeds from a clean checkout.
+- [x] `zig build test` runs and a trivial unit test passes.
+- [x] `zig fmt --check .` passes (all committed Zig is formatted).
+- [x] The full `verify` gate (`zvm run 0.16.0 fmt --check . && zvm run 0.16.0 build && zvm run 0.16.0 build test`) is green.
+- [x] No C library is linked (pure Zig; the first C binding is a later task).
+- [x] Tests cover the new behaviour (the trivial function has a passing test), mirroring the repo's test style.
+- [x] Both name identifiers are defined once, each swappable by a single-line edit, and no other file hard-codes either literal (see `CONTEXT.md` § Naming): a `code_name` constant (`wezig` today) matched by `build.zig.zon`'s `.name`, and a `display_name` constant for the user-facing display name, both in `src/branding.zig`.
 
 ## Blocked by
 
@@ -35,3 +35,11 @@ The thinnest possible task that turns the `verify` gate green and establishes th
 > Note on `build.zig` as a shared file: later tasks register their modules and (for paint) link SDL3 in this same `build.zig`. Structure it so adding a module/dependency later is an additive edit, not a rewrite — this keeps `build.zig` from becoming a merge-conflict point if tasks are ever built off the strict linear chain.
 >
 > RECORD non-obvious in-scope decisions durably (module layout choice, the `build.zig` structure you adopt for this Zig version) — a short `## Decisions` note in the done record or a module doc comment is enough; reach for an ADR only if a choice is hard to reverse and surprising.
+
+## Decisions
+
+- **Zig `0.16.0` (fixed tag), driven via `zvm run 0.16.0`.** No stable `0.17.0` exists and `0.17.0-dev` is only the moving `master`, so the gate pins the newest stable release for reproducibility (gate + CI + subagents). Recorded in `.dorfl.json` `verify` and `CONTEXT.md`.
+- **Library-only, no executable/CLI.** The task said "minimal library/module entrypoint"; an exe with a `main` would be surface with nothing to run yet. A later task adds an app entry when there is something to launch.
+- **Single `wezig` module + additive `build.zig`.** One `b.addModule("wezig", …)` + a `test` step; later subsystem tasks register their modules and (for paint) link SDL3 by ADDING to this file, not reshaping it, so it does not become a merge-conflict point.
+- **`display_name` constant, not `app_name`.** Named to read naturally beside `code_name` and to match `CONTEXT.md`'s "display name" wording. Both constants live once in `src/branding.zig`; `build.zig.zon`'s `.name = .wezig` mirrors `code_name`.
+- **Own package `fingerprint`.** Regenerated for the `wezig` package (`zig init`'s value belongs to a different package identity).
