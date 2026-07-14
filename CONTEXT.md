@@ -18,7 +18,7 @@ The domain glossary for `wezig`. Agents and skills use THIS vocabulary when nami
 - **Ethereum wallet** — the built-in key custody + signing surface and the page-facing provider (EIP-1193 RPC) that lets pages request accounts and signatures; its security model is an open question on the launch spec.
 - **JS engine** — the JavaScript runtime the browser will need for dynamic pages; whether wezig writes one (e.g. via the Zig `kiesel` project) or binds an existing engine (V8/JSC) is an open question.
 - **C-library binding** — the deliberate strategy of exposing mature C/C++ libraries (Skia, FreeType, HarfBuzz, SDL, Dawn/wgpu-native) through Zig rather than reimplementing rasterization, font shaping, or the GPU stack.
-- **promptGuidance** — the per-repo NUDGE namespace in `.dorfl.json` whose members (currently just `testFirst`) strengthen the wording in the worker's in-band prompt. NOT a gate: the `verify` step is still the only acceptance bar. Omitted ⇒ off; absence is the default.
+- **promptGuidance** — the per-repo NUDGE namespace in `dorfl.json` whose members (currently just `testFirst`) strengthen the wording in the worker's in-band prompt. NOT a gate: the `verify` step is still the only acceptance bar. Omitted ⇒ off; absence is the default.
 - **work/ contract** — the on-disk system this repo uses, defined by the reference docs in **`work/protocol/`** (copied here by `setup`): `WORK-CONTRACT.md` (the contract), `CLAIM-PROTOCOL.md`, `REVIEW-PROTOCOL.md`, `task-template.md`, `spec-template.md`, `ADR-FORMAT.md`. Three REGIME umbrellas — `notes/` (capture buckets), `tasks/` (the build board), `specs/` (the spec lifecycle) — plus top-level `questions/` and `protocol/`. One markdown file per item, status = the folder it lives in (never a field). Capture buckets: `notes/ideas/` (proposed), `notes/observations/` (spotted, unverified, append-only), `notes/findings/` (verified external/domain ground truth, each with a `source:`). ADRs (`docs/adr/`, format in `work/protocol/ADR-FORMAT.md`) record what WE decided and why.
 
 ## Naming
@@ -34,7 +34,7 @@ When the build scaffold lands (`build-scaffold-green-gate`), BOTH names are defi
 
 Standing per-change rules agents must follow in this repo.
 
-<!-- e.g. "Every change requires a changeset (`pnpm changeset`)" / a CHANGELOG fragment / a news entry. Add yours here, or delete this section. For enforcement, wire your own check into the `.dorfl.json` `verify` gate. -->
+<!-- e.g. "Every change requires a changeset (`pnpm changeset`)" / a CHANGELOG fragment / a news entry. Add yours here, or delete this section. For enforcement, wire your own check into the `dorfl.json` `verify` gate. -->
 
 ## Skills this repo uses
 
