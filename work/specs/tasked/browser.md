@@ -1,53 +1,22 @@
 ---
-title: wezig — a browser done right, in Zig
+title: wezig v0 — static HTML + CSS painted to a window
 slug: browser
 humanOnly: true
-needsAnswers: true
 ---
 
-> Launch snapshot — records intent at creation, NOT maintained. Current truth: `docs/adr/` (decisions) + the code; remaining work: `work/tasks/ready/` tasks. (The technical-detail sections below are trimmed by `to-task` once the work is tasked — they move into tasks/ADRs and this spec settles to its durable framing: Problem / Solution / User Stories / Out of Scope.)
+> Launch snapshot — records intent at creation, NOT maintained. Current truth: `docs/adr/` (decisions) + the code; remaining work: `work/tasks/ready/` tasks.
 
-<!-- open-questions -->
-<!--
-  TRANSIENT BLOCK — stripped by the apply rung on full resolution.
-  While the spec has unresolved questions blocking autonomous tasking:
-    1. Set `needsAnswers: true` in the frontmatter above.
-    2. List the questions under the `## Open questions` heading below.
-    3. Clear the flag (and let apply strip this block) once they are answered.
-  Delete the whole fenced block — markers and all — if the spec launches fully resolved.
--->
-
-## Open questions
-
-These are genuine design forks that were deliberately DEFERRED at idea-interview time rather than force-resolved. The scope is a serious browser, but only the v0 slice below is committed; everything past it depends on answers here. The auto-tasker must not proceed until these are resolved (hence `needsAnswers: true` and `humanOnly: true`).
-
-1. **JavaScript engine — write or bind?** wezig will eventually need a JS runtime. Do we write one in Zig (e.g. build on / adopt the `kiesel` project) for a fully from-scratch stack, or bind an existing engine (V8 / JavaScriptCore) for immediate real-world compatibility? This is the single largest scope decision after core layout.
-2. **IPFS integration depth.** What does "native IPFS support" mean concretely: embed a full IPFS node (a Zig/Rust implementation) in-process, bind an existing node (e.g. kubo) over its API, or resolve via a trusted gateway with content-hash verification? And is `ipns://` in scope alongside `ipfs://`?
-3. **Ethereum wallet security model.** Where and how are private keys stored (OS keychain, encrypted-at-rest, hardware-wallet support)? What is the signing/approval UX? Which chains beyond Ethereum mainnet? What exactly does the page-facing provider surface expose (EIP-1193 `request`, which RPC methods, permission model)? This area is security-critical and human-judgement-heavy.
-4. **Rendering conformance target.** What is the ambition for standards conformance (a Web Platform Tests percentage, a "renders these N real sites" bar, or "good enough for the on-chain apps we care about")? This sets how far layout/CSS/paint must go past v0.
-5. **Process / sandbox model.** Single-process (simplest, fastest to build) or a multi-process, sandboxed architecture (the security posture real browsers need, especially one holding wallet keys)? This is foundational and hard to retrofit, so it should be decided before layout hardens.
-6. **Which C libraries, pinned.** The strategy is to bind C libraries, but the concrete picks need ratifying: rasterizer (Skia vs a lighter stb-based path), font shaping (HarfBuzz), glyph raster (FreeType vs stb_truetype), windowing/GL (SDL vs GLFW), and WebGPU backend (Dawn vs wgpu-native). v0 needs only window + 2D raster + text; the rest can be decided as their milestones arrive.
-
-<!-- /open-questions -->
+> **This spec was RE-SCOPED (2026-07-14).** It originally bundled the whole wezig vision (render engine + JavaScript + Ethereum + IPFS) with only a v0 slice committed. That mixed a fully-taskable subset with gated direction in one spec — the anti-pattern captured in `../dorfl`'s `tasking-has-no-partial-state...` observation. Per the "task a spec atomically or split it" principle, the beyond-v0 direction was broken out into its own logically-grouped, separately-taskable specs (see [Successor specs](#successor-specs)). What remains here is ONLY the v0 render slice, which is fully tasked and built. The decision to ship usability first via a system-webview backend behind a `Renderer` seam is recorded in `docs/adr/0005-renderer-seam-webview-backend-while-native-catches-up.md`.
 
 ## Problem Statement
 
-A browser should be able to talk to Ethereum and resolve content-addressed resources natively. Mainstream browsers don't: connecting to on-chain apps means a third-party extension grafted onto a browser that has no native notion of accounts or signing (supporting the EIP-1193 provider natively, as Brave does, is the exception, not the norm), and IPFS content is reached through HTTP gateways (a trust and UX compromise, not real content-addressing). None of this makes a browser a different genre; it is just a browser that isn't artificially missing obvious capabilities. There is no browser whose core treats an Ethereum provider (EIP-1193 RPC) and content-addressed retrieval (IPFS) as first-class, built-in capabilities. wezig exists to be that browser, built from scratch in Zig so the whole stack is owned and these capabilities are native rather than add-ons.
+Before wezig can be a browser (let alone one with native Ethereum/IPFS), it needs a real rendering core: bytes of HTML/CSS turned into pixels on screen, built behind swappable seams so each subsystem can mature independently. v0 proves that core on a deliberately small, fixed subset, with a working `zig build` / `zig build test` acceptance loop from day one, so "it renders" is testable rather than aspirational.
 
 ## Solution
 
-A from-scratch browser, written in Zig, that renders the standard web AND treats a native Ethereum provider and native content-addressing as capabilities a complete browser should have:
+A from-scratch rendering pipeline in Zig — HTML parse → DOM → CSS cascade → block/inline layout → software paint to a window — over a FIXED, documented subset of HTML/CSS, binding mature C libraries (SDL3 for the window, stb_truetype for glyphs) rather than reimplementing rasterization or shaping. The subset is small on purpose: enough structure to exercise block/inline layout and paint a real page fragment, and nothing more. Every subset boundary is reported through one structured `Diagnostics` sink, and the exact subset + limits are written down as a contract.
 
-- A **rendering engine** built from the ground up (HTML parse → DOM → CSS cascade → layout → paint/composite), binding mature C libraries (Skia/FreeType/HarfBuzz/SDL, and later Dawn or wgpu-native) for rasterization, font shaping, and the GPU stack rather than reimplementing them.
-- **Native IPFS resolution**, so `ipfs://` content is fetched and verified as content-addressed data, not proxied through a gateway.
-- A **built-in Ethereum provider (EIP-1193 RPC)**, so pages can request accounts and signatures natively without a third-party extension.
-- Later, the dynamic-web capabilities real pages need: a **JavaScript engine**, and GPU-backed **Canvas 2D / WebGL / WebGPU** contexts composited into the page.
-
-The v0 slice deliberately proves the rendering core before any Ethereum, IPFS, or scripting lands.
-
-## User Stories
-
-### v0 — the committed milestone (static HTML + CSS paint to a window)
+## User Stories (the committed v0 milestone — TASKED AND BUILT)
 
 1. As a developer, I want wezig to parse a fixed, documented subset of HTML into a DOM tree, so that there is a real document model to lay out.
 2. As a developer, I want wezig to parse a fixed subset of CSS and apply it to the DOM (cascade + inheritance for the supported properties), so that nodes have computed styles.
@@ -56,30 +25,23 @@ The v0 slice deliberately proves the rendering core before any Ethereum, IPFS, o
 5. As a developer, I want a `build.zig` and a `zig build` / `zig build test` flow that makes the `verify` gate green, so that the project has a working acceptance loop from day one.
 6. As a developer, I want the v0 HTML/CSS subset and its limits written down, so that "it works" for v0 is unambiguous and testable.
 
-### Beyond v0 (direction, gated on the open questions above)
+All six landed as tasks (now in `work/tasks/done/`: build-scaffold-green-gate, diagnostics-sink, html-parse-subset, css-parse-and-cascade, layout-block-inline, fix-fontsize-unsupported-unit, paint-sdl3-stb-window, document-v0-subset-limits) and the ADRs `docs/adr/0001..0004`. The exact v0 subset + limits are `docs/v0-subset.md`.
 
-7. As a user, I want to open an `ipfs://` address and have wezig resolve and verify the content natively, so that content-addressed sites load without a gateway.
-8. As a page, I want to request accounts and signatures from wezig's built-in Ethereum provider (EIP-1193) natively, so that users transact without a third-party extension.
-9. As a user, I want my wallet keys stored and signing approved through a trustworthy, well-defined security model, so that a browser holding keys is safe to use.
-10. As a developer, I want dynamic pages to run JavaScript, so that real script-driven pages actually function.
-11. As a developer, I want Canvas 2D, WebGL, and WebGPU contexts exposed to page script and composited into the page, so that graphics-heavy pages and content render.
-12. As a user, I want wezig to render enough real HTML/CSS to load the sites I care about, so that it is a usable browser and not only a demo.
+## Successor specs
 
-### Autonomy notes (the two gate axes)
+The wezig vision beyond v0 is now carried by three logically-grouped, separately-taskable specs (each atomically taskable once its own open questions are answered), sequenced behind ADR-0005's `Renderer` seam:
 
-- **`humanOnly: true`** — a human must drive the TASKING of this spec. It is a serious-browser vision with security-critical (wallet key custody, signing) and architecture-foundational (process/sandbox model, JS-engine choice) forks; an agent must not auto-fan this into tasks. This flag governs tasking only and does not pre-set the gate of individual tasks (the tasker decides each task's gate from its own build-nature — e.g. a v0 `build.zig` chore can be fully agent-buildable).
-- **`needsAnswers: true`** — the six open questions above block auto-tasking until resolved. The v0 stories (1–6) are well-defined and could be tasked once a human clears tasking, but the beyond-v0 stories depend on the answers, so the spec as a whole is flagged incomplete rather than falsely complete.
+- **`usable-browser-webview-shell`** — ship a USABLE browser first: a `Renderer` seam + a system-webview backend (WebKitGTK) + the chrome/shell (window, tabs, URL bar, navigation), so wezig is a real, usable browser early while the native renderer catches up. `taskedAfter: [browser]`.
+- **`native-renderer-conformance`** — grow wezig's OWN renderer past the v0 subset toward matching existing browsers (real HTML parsing, full CSS, floats/flex/grid/tables/positioning, real text shaping, networking), behind the same `Renderer` seam so it swaps in progressively. `taskedAfter: [browser]`.
+- **`web3-native-capabilities`** — the differentiators: a native Ethereum provider (EIP-1193) and native IPFS resolution, specified against the seam's script-bridge + request-interception hooks so they work whichever backend renders the page. `taskedAfter: [usable-browser-webview-shell]`.
 
-> **The v0 slice has been TASKED.** The launch-time Implementation and Testing detail moved into the v0 tasks (`work/tasks/backlog/`: build-scaffold-green-gate, diagnostics-sink, html-parse-subset, css-parse-and-cascade, layout-block-inline, paint-sdl3-stb-window, document-v0-subset-limits) and into `docs/adr/0001-v0-thin-subset-behind-swappable-seams.md`. The six strategic open questions above remain deferred (they gate the beyond-v0 stories 7-12, which are NOT tasked).
+## Out of Scope (of THIS v0 spec)
 
-## Out of Scope
-
-- **v0 explicitly excludes** JavaScript execution, Canvas/WebGL/WebGPU, IPFS resolution, and the Ethereum wallet. These are direction (stories 7–12), not the committed first slice.
-- **Full web-platform conformance** is not a v0 goal and its target is an open question (4).
-- **Writing our own rasterizer / font shaper / GPU driver** is out of scope by strategy — these are bound from C libraries.
-- **Migration of any existing code** — none exists; this is a clean-slate project.
+- **v0 explicitly excludes** JavaScript execution, Canvas/WebGL/WebGPU, IPFS resolution, the Ethereum wallet, networking, navigation, and any browser chrome. Those are the successor specs above, not this slice.
+- **Full web-platform conformance** is not a v0 goal; its target is an open question owned by `native-renderer-conformance`.
+- **Writing our own rasterizer / font shaper / GPU driver** is out of scope by strategy — bound from C libraries.
 
 ## Further Notes
 
 - Landscape context gathered at idea time (mid-2025): **Ladybird** (C++, independent, 4th on Web Platform Tests as of March 2025, moving toward Rust) is the reference for "browser from scratch" and a calibration on how hard this is even when funded; **Servo** (Rust) and **Vaev** (C++) are other from-scratch engines. No production browser is written in Zig, but the pillars each have Zig starting points (`zss`, `kiesel`, `zigquery`), which de-risks the "does anyone do this in Zig" question.
-- The honest framing to keep front-of-mind: a full browser "including all rendering" plus Canvas/WebGL/WebGPU, a JS engine, IPFS, and a wallet is a decade-scale, multi-person effort. This spec commits only to the v0 rendering slice and captures the rest as gated direction so the work stays truthful about scope.
+- The honest framing to keep front-of-mind: a full browser including all rendering plus Canvas/WebGL/WebGPU, a JS engine, IPFS, and a wallet is a decade-scale, multi-person effort. The webview-shell track (ADR-0005) is how wezig becomes usable and differentiated LONG before the native renderer reaches that bar.
