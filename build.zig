@@ -76,6 +76,26 @@ pub fn build(b: *std.Build) void {
     const gen_step = b.step("gen-goldens", "Regenerate committed golden reference PNGs");
     gen_step.dependOn(&run_gen.step);
 
+    // --- PROTOTYPE (throwaway, ADR-0004): a native X11 window with NO SDL ---
+    // `zig build proto-x11` builds prototypes/x11_window.zig, which presents the
+    // same `renderScene` Surface via Xlib, linking ONLY the OS's libX11. It is
+    // deliberately NOT part of `installArtifact`/`test`; delete this block and
+    // prototypes/ once the windowing question is settled.
+    const proto_x11 = b.addExecutable(.{
+        .name = "proto-x11",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("prototypes/x11_window.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "wezig", .module = mod }},
+        }),
+    });
+    proto_x11.root_module.link_libc = true;
+    proto_x11.root_module.linkSystemLibrary("X11", .{});
+    const run_proto = b.addRunArtifact(proto_x11);
+    const proto_step = b.step("proto-x11", "PROTOTYPE: native X11 window, no SDL (ADR-0004)");
+    proto_step.dependOn(&run_proto.step);
+
     // `zig build test` runs the library's and executable's `test` blocks.
     const mod_tests = b.addTest(.{ .root_module = mod });
     const run_mod_tests = b.addRunArtifact(mod_tests);
