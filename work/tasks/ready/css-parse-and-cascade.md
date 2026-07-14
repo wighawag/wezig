@@ -1,7 +1,7 @@
 ---
 title: CSS parse + cascade — computed styles on the DOM
 slug: css-parse-and-cascade
-spec: wezig-browser
+spec: browser
 blockedBy: [html-parse-subset]
 covers: [2]
 ---

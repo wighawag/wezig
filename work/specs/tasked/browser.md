@@ -1,6 +1,6 @@
 ---
 title: wezig — a browser done right, in Zig
-slug: wezig-browser
+slug: browser
 humanOnly: true
 needsAnswers: true
 ---

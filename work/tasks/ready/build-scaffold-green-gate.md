@@ -1,7 +1,7 @@
 ---
 title: Build scaffold — green verify gate
 slug: build-scaffold-green-gate
-spec: wezig-browser
+spec: browser
 blockedBy: []
 covers: [5]
 ---
@@ -18,6 +18,7 @@ The thinnest possible task that turns the `verify` gate green and establishes th
 - [ ] The full `verify` gate `zig fmt --check . && zig build && zig build test` is green.
 - [ ] No C library is linked (pure Zig; the first C binding is a later task).
 - [ ] Tests cover the new behaviour (the trivial function has a passing test), mirroring the repo's test style.
+- [ ] Both name identifiers are defined once, each swappable by a single-line edit, and no other file hard-codes either literal (see `CONTEXT.md` § Naming): a `code_name` constant (`wezig` today) matched by `build.zig.zon`'s `.name`, and an `app_name` constant for the user-facing display name — e.g. both in `src/branding.zig`.
 
 ## Blocked by
 
@@ -27,7 +28,7 @@ The thinnest possible task that turns the `verify` gate green and establishes th
 
 > Goal: give wezig a working Zig build + test acceptance loop from day one. The repo is a clean-slate Zig project (Zig 0.17.0-dev via zvm on PATH); there is no `build.zig` yet, so the `.dorfl.json` verify gate (`zig fmt --check . && zig build && zig build test`) is RED by design. Your job is to make it green with the absolute minimum: a `build.zig`, a `build.zig.zon`, a minimal library/module entrypoint with one trivial function, and one passing unit test wired into `zig build test`. Do NOT add any C dependency, HTML/CSS parsing, layout, or paint — those are separate later tasks that depend on this one.
 >
-> Domain vocabulary is in `CONTEXT.md`; the work contract is `work/protocol/WORK-CONTRACT.md`. Keep it idiomatic for the installed Zig version (check `zig version`; the build API changes between Zig releases, so match what 0.17.0-dev expects). "Done" = a fresh checkout runs `zig build` and `zig build test` green and `zig fmt --check .` is clean.
+> Domain vocabulary is in `CONTEXT.md`; the work contract is `work/protocol/WORK-CONTRACT.md`. Per `CONTEXT.md` § Naming there are TWO swappable name identifiers, both of which can change later: the CODE NAME (`wezig` today — `build.zig.zon`'s `.name`, matched by a `code_name` constant) and the user-facing DISPLAY NAME (an `app_name` constant). Define each once (e.g. both in `src/branding.zig`) and never hard-code either literal elsewhere, so a future rename of either is a one-line change. Keep it idiomatic for the installed Zig version (check `zig version`; the build API changes between Zig releases, so match what 0.17.0-dev expects). "Done" = a fresh checkout runs `zig build` and `zig build test` green and `zig fmt --check .` is clean.
 >
 > FIRST, check this task against current reality (it is a launch snapshot and may have DRIFTED): confirm no `build.zig` exists yet and the gate is still red for the reason stated. If something already landed a build, reconcile rather than clobber.
 >

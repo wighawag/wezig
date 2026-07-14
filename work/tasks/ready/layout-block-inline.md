@@ -1,7 +1,7 @@
 ---
 title: Layout — block + inline boxes with text
 slug: layout-block-inline
-spec: wezig-browser
+spec: browser
 blockedBy: [css-parse-and-cascade]
 covers: [3]
 ---

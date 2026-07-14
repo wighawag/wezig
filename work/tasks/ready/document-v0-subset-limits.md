@@ -1,7 +1,7 @@
 ---
 title: Document the v0 HTML/CSS subset and its limits
 slug: document-v0-subset-limits
-spec: wezig-browser
+spec: browser
 blockedBy: [css-parse-and-cascade, layout-block-inline]
 covers: [6]
 ---

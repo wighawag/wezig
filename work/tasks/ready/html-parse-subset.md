@@ -1,7 +1,7 @@
 ---
 title: HTML parse — fixed subset to DOM
 slug: html-parse-subset
-spec: wezig-browser
+spec: browser
 blockedBy: [diagnostics-sink]
 covers: [1]
 ---

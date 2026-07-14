@@ -1,7 +1,7 @@
 ---
 title: Paint — SDL3 + stb software backend to a window
 slug: paint-sdl3-stb-window
-spec: wezig-browser
+spec: browser
 blockedBy: [layout-block-inline]
 covers: [4]
 ---

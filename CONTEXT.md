@@ -21,6 +21,15 @@ The domain glossary for `wezig`. Agents and skills use THIS vocabulary when nami
 - **promptGuidance** — the per-repo NUDGE namespace in `.dorfl.json` whose members (currently just `testFirst`) strengthen the wording in the worker's in-band prompt. NOT a gate: the `verify` step is still the only acceptance bar. Omitted ⇒ off; absence is the default.
 - **work/ contract** — the on-disk system this repo uses, defined by the reference docs in **`work/protocol/`** (copied here by `setup`): `WORK-CONTRACT.md` (the contract), `CLAIM-PROTOCOL.md`, `REVIEW-PROTOCOL.md`, `task-template.md`, `spec-template.md`, `ADR-FORMAT.md`. Three REGIME umbrellas — `notes/` (capture buckets), `tasks/` (the build board), `specs/` (the spec lifecycle) — plus top-level `questions/` and `protocol/`. One markdown file per item, status = the folder it lives in (never a field). Capture buckets: `notes/ideas/` (proposed), `notes/observations/` (spotted, unverified, append-only), `notes/findings/` (verified external/domain ground truth, each with a `source:`). ADRs (`docs/adr/`, format in `work/protocol/ADR-FORMAT.md`) record what WE decided and why.
 
+## Naming
+
+There are TWO distinct, swappable name identifiers with independent lifecycles; neither is baked into the `work/` identity graph. The launch spec and its tasks use the name-independent slug `browser` (`slug: browser` / `spec: browser`), so renaming EITHER identifier never touches the `work/` cross-reference graph.
+
+- **Code name** (`wezig` today) — the internal project/codebase identity: repo, module namespace, `build.zig.zon`'s `.name`. Stable for now and safe to use as the current identity, but it CAN change later, so code that must refer to it reads a single `code_name` constant rather than hard-coding the literal.
+- **Display name** (undecided, WILL change) — the user-facing product name. Defined in exactly ONE place: a single `app_name` constant. Every user-facing/UI reference reads that constant.
+
+When the build scaffold lands (`build-scaffold-green-gate`), BOTH names are defined once (e.g. `code_name` and `app_name` in a `src/branding.zig` module, with `build.zig.zon`'s `.name` = the code name). Renaming either later is then a one-line constant edit plus prose mentions (`CONTEXT.md`, the spec `title:`/body), with no identity or cross-reference churn.
+
 ## Conventions
 
 Standing per-change rules agents must follow in this repo.
