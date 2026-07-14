@@ -31,6 +31,11 @@ pub const surface = @import("surface.zig");
 /// raster) realising the `PaintBackend` seam, plus `paintTree`.
 pub const paint = @import("paint.zig");
 
+/// Doc-drift guard for the v0 subset-limits reference (`docs/v0-subset.md`):
+/// asserts the doc names every allowlisted element, supported property, and
+/// diagnostic code the code enforces, so the contract cannot silently drift.
+pub const docs = @import("docs.zig");
+
 /// Trivial placeholder so `zig build test` has real behaviour to assert on.
 /// Replaced/extended by the first real subsystem task.
 pub fn add(a: i32, b: i32) i32 {
@@ -51,4 +56,5 @@ test {
     _ = layout;
     _ = surface;
     _ = paint;
+    _ = docs;
 }
