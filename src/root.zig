@@ -31,6 +31,20 @@ pub const surface = @import("surface.zig");
 /// raster) realising the `PaintBackend` seam, plus `paintTree`.
 pub const paint = @import("paint.zig");
 
+/// The `Renderer` seam (ADR-0005/0006): the chrome-to-content boundary the
+/// chrome, wallet, and IPFS talk to. Pure interface (no webview binding);
+/// `SystemWebviewRenderer` (in the shell exe) implements it on WebKitGTK.
+pub const renderer = @import("renderer.zig");
+
+/// The chrome/toolkit seam (ADR-0006): the chrome-host boundary (window +
+/// widgets, windowing behind it). Pure interface (no GTK binding); `GtkToolkit`
+/// (in the shell exe) implements it on GTK4.
+pub const toolkit = @import("toolkit.zig");
+
+/// The minimal chrome (one window, URL bar, back/forward) that talks ONLY to
+/// the `renderer` + `toolkit` seams. Imports neither webkit nor gtk symbols.
+pub const chrome = @import("chrome.zig");
+
 /// Doc-drift guard for the v0 subset-limits reference (`docs/v0-subset.md`):
 /// asserts the doc names every allowlisted element, supported property, and
 /// diagnostic code the code enforces, so the contract cannot silently drift.
@@ -57,4 +71,7 @@ test {
     _ = surface;
     _ = paint;
     _ = docs;
+    _ = renderer;
+    _ = toolkit;
+    _ = chrome;
 }

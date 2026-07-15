@@ -1,27 +1,41 @@
-//! The webview SHELL path: open a GTK4 window hosting a `WebKitWebView` and
-//! load one real, interactive page. This is the tracer bullet for the
-//! `Renderer` seam exploration (ADR-0005, spec `explore-webview-shell`): proof
-//! that WebKitGTK 6.0 renders a real page from Zig. It is NOT a browser and NOT
-//! the seam itself yet; those are follow-on tasks. It is the webview twin of
-//! `sdl.zig`: an on-screen host path linked ONLY into the shell executable, so
-//! the v0 SDL render path and the headless golden tests never see WebKitGTK.
+//! The webview SHELL path: stand up the minimal chrome (one window, URL bar,
+//! back/forward) driving a real page THROUGH the two seams (ADR-0005, ADR-0006,
+//! spec `explore-webview-shell`). This file is the SHELL exe's wiring + its
+//! headless smoke verification; it owns NO seam logic itself:
+//!
+//!   - the `Renderer` seam (content) is `renderer.zig`, implemented by
+//!     `SystemWebviewRenderer` (WebKitGTK) in `system_webview_renderer.zig`;
+//!   - the chrome/toolkit seam (chrome host + windowing) is `toolkit.zig`,
+//!     implemented by `GtkToolkit` (GTK4) in `gtk_toolkit.zig`;
+//!   - the minimal chrome that talks ONLY to those two seams is `chrome.zig`.
+//!
+//! WebKitGTK/GTK are touched ONLY by the two backend files + this file's smoke
+//! snapshot (WebKit has no seam-level snapshot API yet); the chrome never sees
+//! them. Like `sdl.zig`, everything here links native libraries and lives in
+//! the shell executable ONLY, so the v0 SDL render path and the headless golden
+//! tests never see WebKitGTK/GTK.
 //!
 //! Two entrypoints, mirroring the two build steps:
-//!   - `runShell`  (`zig build shell`)      opens the window interactively.
+//!   - `runShell`  (`zig build shell`)      builds the chrome and runs the GTK
+//!     main loop interactively (blocks until the window is closed).
 //!   - `smokeTest` (`zig build shell-test`) drives it headlessly under Xvfb:
-//!     load a page, wait for the load-finished signal, snapshot the view, and
-//!     assert the snapshot is non-blank. WebKitGTK has NO native headless mode
-//!     and `GtkOffscreenWindow` does not work with a WebView (WebKit bug
-//!     #76911), so a virtual X display (`xvfb-run`) is the supported approach;
-//!     `smokeTest` therefore still needs a (virtual) display, which is why it
-//!     is its OWN build step and NOT part of `zig build test`.
-//!
-//! The GTK4/WebKit binding comes through `webkit_c.h` (see that header for why
-//! a thin translate-c shim is needed instead of a bare `@cInclude`).
+//!     navigate through the `Renderer` seam, wait for the seam's `.finished`
+//!     lifecycle event (proving seam-level navigation reaches the chrome),
+//!     snapshot the view, and assert the snapshot is non-blank. WebKitGTK has
+//!     NO native headless mode and `GtkOffscreenWindow` does not work with a
+//!     WebView (WebKit bug #76911), so a virtual X display (`xvfb-run`) is the
+//!     supported approach; `smokeTest` therefore still needs a (virtual)
+//!     display, which is why it is its OWN build step and NOT part of
+//!     `zig build test`.
 
 const std = @import("std");
 const wezig = @import("wezig");
+const SystemWebviewRenderer = @import("system_webview_renderer.zig").SystemWebviewRenderer;
+const GtkToolkit = @import("gtk_toolkit.zig").GtkToolkit;
+const Chrome = wezig.chrome.Chrome;
 
+/// The GTK/WebKit binding, needed ONLY for the smoke test's snapshot (there is
+/// no seam-level snapshot API yet). The interactive/chrome paths never use it.
 const c = @cImport({
     @cDefine("__GI_SCANNER__", "1");
     @cDefine("GTK_COMPILATION", "1");
@@ -42,11 +56,6 @@ const smoke_page =
     "<body style='margin:0;background:%23204080;color:%23ffffff;font:48px sans-serif'>" ++
     "<h1>wezig webview shell</h1><p>hello, window</p></body>";
 
-/// Window size for the shell. A real, comfortable size (not the goldens' tiny
-/// sizes), like `main.zig`'s on-screen window.
-const window_w: c_int = 1024;
-const window_h: c_int = 768;
-
 /// Errors the shell can report to its caller (the shell executable's `main`).
 pub const ShellError = error{
     /// GTK could not initialise (e.g. no display / no `$DISPLAY`, and no Xvfb).
@@ -63,90 +72,62 @@ pub const ShellError = error{
     OutOfMemory,
 };
 
-/// Initialise GTK4, returning false (rather than aborting like `gtk_init`) when
-/// there is no usable display, so the caller can report a clean error in a
-/// headless environment with no Xvfb.
-fn gtkInit() bool {
-    return c.gtk_init_check() != 0;
-}
-
-/// `g_signal_connect` is a macro over `g_signal_connect_data`; replicate it.
-fn signalConnect(instance: c.gpointer, detailed_signal: [*:0]const u8, handler: c.GCallback, data: c.gpointer) void {
-    _ = c.g_signal_connect_data(instance, detailed_signal, handler, data, null, 0);
-}
-
-/// Build a GTK4 window hosting a `WebKitWebView` sized to the window and
-/// loading `uri`. Shared by both entrypoints. Returns the window and view.
-fn buildWindow(uri: [*:0]const u8) struct { window: *c.GtkWindow, view: *c.WebKitWebView } {
-    const window: *c.GtkWindow = @ptrCast(c.gtk_window_new());
-    c.gtk_window_set_default_size(window, window_w, window_h);
-    const title = wezig.branding.display_name ++ " — webview shell";
-    c.gtk_window_set_title(window, title);
-
-    const view: *c.WebKitWebView = @ptrCast(c.webkit_web_view_new());
-    c.gtk_window_set_child(window, @ptrCast(view));
-    c.webkit_web_view_load_uri(view, uri);
-
-    return .{ .window = window, .view = view };
-}
-
 // --- Interactive entrypoint (`zig build shell`) --------------------------
 
-/// Open the window and run the GTK main loop until the user closes it. This is
-/// the `zig build shell` path: a real, interactive page (scroll, click a link,
-/// type into a field). Requires a real display; returns `error.GtkInit` in a
-/// headless environment with no Xvfb.
+/// Build the minimal chrome over the two seams and run the toolkit main loop
+/// until the user closes the window. Requires a real display; returns
+/// `error.GtkInit` in a headless environment with no Xvfb.
 pub fn runShell() ShellError!void {
-    if (!gtkInit()) return error.GtkInit;
-
-    const w = buildWindow(default_url);
-    // Quit the process-wide main loop when the window is closed.
-    signalConnect(@ptrCast(w.window), "destroy", @ptrCast(&onDestroyQuit), null);
-    c.gtk_window_present(w.window);
-
-    // GTK4 dropped `gtk_main`; drive the default context directly until the
-    // window's "destroy" handler tears it down.
-    running = true;
-    while (running) {
-        _ = c.g_main_context_iteration(null, 1); // may_block = TRUE
-    }
-}
-
-var running: bool = false;
-
-fn onDestroyQuit(_: *c.GtkWidget, _: c.gpointer) callconv(.c) void {
-    running = false;
+    var toolkit = GtkToolkit.init() catch return error.GtkInit;
+    var view_renderer = SystemWebviewRenderer.init();
+    var chrome = Chrome.init(view_renderer.renderer(), toolkit.toolkit());
+    // `start` attaches both seams' callbacks, builds the window, embeds the
+    // view, navigates to the default page, and runs the GTK main loop until the
+    // window's "destroy" -> `.closed` intent -> `toolkit.quit()`.
+    chrome.start(default_url);
 }
 
 // --- Headless smoke test (`zig build shell-test`, under xvfb-run) --------
 
-/// Shared state the smoke test's GTK callbacks hand back to `smokeTest`.
+/// Shared state the smoke test's callbacks hand back to `smokeTest`.
 const Smoke = struct {
     loop: *c.GMainLoop,
     view: *c.WebKitWebView,
+    /// Set true once the `Renderer` seam delivered a `.finished` lifecycle
+    /// event to the chrome-observing sink (proves seam-level navigation).
+    seam_finished: bool = false,
     /// Set once a verdict is reached; `smokeTest` reads it after the loop ends.
     result: ShellError!void = error.NoResult,
     /// The pixel scan's allocator (freed by `smokeTest`).
     gpa: std.mem.Allocator,
 };
 
-/// Drive the shell headlessly and verify it rendered. Intended to run under a
-/// virtual display (`xvfb-run zig build shell-test`). Loads `smoke_page`, waits
-/// for the load-finished signal, snapshots the view, and asserts the snapshot
-/// is non-blank. Returns the verdict; the shell executable turns it into an
-/// exit code.
+/// Drive the chrome headlessly THROUGH the seams and verify it rendered.
+/// Intended to run under a virtual display (`xvfb-run zig build shell-test`).
+/// Navigates via the `Renderer` seam, waits for the seam's `.finished`
+/// lifecycle event, snapshots the view, and asserts the snapshot is non-blank.
+/// Returns the verdict; the shell executable turns it into an exit code.
 pub fn smokeTest(gpa: std.mem.Allocator) ShellError!void {
-    if (!gtkInit()) return error.GtkInit;
+    var toolkit = GtkToolkit.init() catch return error.GtkInit;
+    var view_renderer = SystemWebviewRenderer.init();
+    const r = view_renderer.renderer();
 
     const loop = c.g_main_loop_new(null, 0) orelse return error.NoResult;
     defer c.g_main_loop_unref(loop);
 
-    const w = buildWindow(smoke_page);
-    // A WebView must be mapped on a (virtual) display to render; present it.
-    c.gtk_window_present(w.window);
+    // The seam hands the view across as an OPAQUE handle; it is the underlying
+    // `WebKitWebView` (a GtkWidget). Re-cast it through THIS file's cImport so
+    // the local snapshot API accepts it (the backend's cImport is a distinct
+    // translation unit, so its `*WebKitWebView` type is not shared here).
+    const view: *c.WebKitWebView = @ptrCast(@alignCast(r.view()));
+    var smoke = Smoke{ .loop = loop, .view = view, .gpa = gpa };
 
-    var smoke = Smoke{ .loop = loop, .view = w.view, .gpa = gpa };
-    signalConnect(@ptrCast(w.view), "load-changed", @ptrCast(&onLoadChanged), &smoke);
+    // Build the chrome over the two seams, then subscribe the smoke observer
+    // to the SAME renderer seam so we assert navigation crosses the seam.
+    var chrome = Chrome.init(r, toolkit.toolkit());
+    chrome.attach();
+    r.setLifecycleCallback(.{ .ctx = &smoke, .onEvent = onSeamEvent });
+    chrome.build(smoke_page);
 
     // Safety net: if the load never finishes, stop the loop after a while so
     // the test fails loudly instead of hanging CI.
@@ -156,25 +137,32 @@ pub fn smokeTest(gpa: std.mem.Allocator) ShellError!void {
     return smoke.result;
 }
 
+/// The `Renderer`-seam lifecycle observer for the smoke test. When the seam
+/// reports the load `.finished`, request a snapshot of the view.
+fn onSeamEvent(ctx: *anyopaque, event: wezig.renderer.LifecycleEvent) void {
+    const smoke: *Smoke = @ptrCast(@alignCast(ctx));
+    switch (event) {
+        .load_changed => |lc| {
+            if (lc.state != .finished or smoke.seam_finished) return;
+            smoke.seam_finished = true;
+            c.webkit_web_view_get_snapshot(
+                smoke.view,
+                c.WEBKIT_SNAPSHOT_REGION_VISIBLE,
+                c.WEBKIT_SNAPSHOT_OPTIONS_NONE,
+                null,
+                @ptrCast(&onSnapshotReady),
+                smoke,
+            );
+        },
+        else => {},
+    }
+}
+
 fn onTimeout(data: c.gpointer) callconv(.c) c.gboolean {
     const smoke: *Smoke = @ptrCast(@alignCast(data));
     smoke.result = error.LoadFailed;
     c.g_main_loop_quit(smoke.loop);
     return 0; // G_SOURCE_REMOVE
-}
-
-fn onLoadChanged(_: *c.WebKitWebView, load_event: c.WebKitLoadEvent, data: c.gpointer) callconv(.c) void {
-    const smoke: *Smoke = @ptrCast(@alignCast(data));
-    if (load_event != c.WEBKIT_LOAD_FINISHED) return;
-    // Page finished loading: request a snapshot of the visible region.
-    c.webkit_web_view_get_snapshot(
-        smoke.view,
-        c.WEBKIT_SNAPSHOT_REGION_VISIBLE,
-        c.WEBKIT_SNAPSHOT_OPTIONS_NONE,
-        null,
-        @ptrCast(&onSnapshotReady),
-        data,
-    );
 }
 
 fn onSnapshotReady(source: c.gpointer, res: *c.GAsyncResult, data: c.gpointer) callconv(.c) void {

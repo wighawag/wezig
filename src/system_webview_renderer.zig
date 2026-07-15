@@ -1,0 +1,155 @@
+//! `SystemWebviewRenderer`: the `Renderer` seam (renderer.zig) implemented on
+//! WebKitGTK 6.0 (ADR-0005, ADR-0006). This is the ONE place WebKitGTK is
+//! touched for content: it wraps a `WebKitWebView`, maps the seam's methods to
+//! `webkit_web_view_*` calls, and translates WebKit's signals into the seam's
+//! `LifecycleEvent`s. `WezigRenderer` will implement the SAME `renderer.zig`
+//! interface later and be swapped in behind it.
+//!
+//! Like `sdl.zig` (SDL) and `gtk_toolkit.zig` (GTK), this file links a native
+//! library and therefore lives in the SHELL executable ONLY, never the `wezig`
+//! library module (see `build.zig`). The `wezig` library, the v0 SDL app, and
+//! the headless golden tests never see WebKitGTK.
+//!
+//! The GTK4/WebKit binding comes through `webkit_c.h` (see that header for why
+//! a thin translate-c shim is needed instead of a bare `@cInclude`).
+
+const std = @import("std");
+const wezig = @import("wezig");
+const seam = wezig.renderer;
+
+const c = @cImport({
+    @cDefine("__GI_SCANNER__", "1");
+    @cDefine("GTK_COMPILATION", "1");
+    @cInclude("webkit_c.h");
+});
+
+/// A `Renderer` backed by one `WebKitWebView`. Construct with `init`, obtain the
+/// seam value with `renderer()`, and hand THAT to the chrome. The chrome never
+/// sees the `WebKitWebView`; it flows to the toolkit only as an opaque
+/// `ViewHandle` (the underlying `GtkWidget`).
+pub const SystemWebviewRenderer = struct {
+    view: *c.WebKitWebView,
+    cb: ?seam.LifecycleCallback = null,
+
+    /// Create the underlying `WebKitWebView`. GTK must already be initialised
+    /// (the toolkit's `createWindow` does that); a `WebKitWebView` is a GTK
+    /// widget, so it needs GTK up.
+    pub fn init() SystemWebviewRenderer {
+        const view: *c.WebKitWebView = @ptrCast(c.webkit_web_view_new());
+        return .{ .view = view };
+    }
+
+    pub fn renderer(self: *SystemWebviewRenderer) seam.Renderer {
+        // Wire WebKit's signals to our re-emitters now that `self` has a stable
+        // address (the caller holds it by pointer).
+        signalConnect(@ptrCast(self.view), "load-changed", @ptrCast(&onLoadChanged), self);
+        signalConnect(@ptrCast(self.view), "notify::title", @ptrCast(&onNotifyTitle), self);
+        signalConnect(@ptrCast(self.view), "notify::uri", @ptrCast(&onNotifyUri), self);
+        signalConnect(@ptrCast(self.view), "notify::estimated-load-progress", @ptrCast(&onNotifyProgress), self);
+        return .{ .ptr = self, .vtable = &vtable };
+    }
+
+    const vtable = seam.Renderer.VTable{
+        .navigate = navigate,
+        .reload = reloadFn,
+        .stop = stopFn,
+        .goBack = goBack,
+        .goForward = goForward,
+        .canGoBack = canGoBack,
+        .canGoForward = canGoForward,
+        .view = viewHandle,
+        .setViewportSize = setViewportSize,
+        .setLifecycleCallback = setLifecycleCallback,
+    };
+
+    fn navigate(ctx: *anyopaque, uri: [*:0]const u8) void {
+        const self: *SystemWebviewRenderer = @ptrCast(@alignCast(ctx));
+        c.webkit_web_view_load_uri(self.view, uri);
+    }
+    fn reloadFn(ctx: *anyopaque) void {
+        const self: *SystemWebviewRenderer = @ptrCast(@alignCast(ctx));
+        c.webkit_web_view_reload(self.view);
+    }
+    fn stopFn(ctx: *anyopaque) void {
+        const self: *SystemWebviewRenderer = @ptrCast(@alignCast(ctx));
+        c.webkit_web_view_stop_loading(self.view);
+    }
+    fn goBack(ctx: *anyopaque) void {
+        const self: *SystemWebviewRenderer = @ptrCast(@alignCast(ctx));
+        c.webkit_web_view_go_back(self.view);
+    }
+    fn goForward(ctx: *anyopaque) void {
+        const self: *SystemWebviewRenderer = @ptrCast(@alignCast(ctx));
+        c.webkit_web_view_go_forward(self.view);
+    }
+    fn canGoBack(ctx: *anyopaque) bool {
+        const self: *SystemWebviewRenderer = @ptrCast(@alignCast(ctx));
+        return c.webkit_web_view_can_go_back(self.view) != 0;
+    }
+    fn canGoForward(ctx: *anyopaque) bool {
+        const self: *SystemWebviewRenderer = @ptrCast(@alignCast(ctx));
+        return c.webkit_web_view_can_go_forward(self.view) != 0;
+    }
+    fn viewHandle(ctx: *anyopaque) seam.ViewHandle {
+        const self: *SystemWebviewRenderer = @ptrCast(@alignCast(ctx));
+        // The interactive view IS the GtkWidget; hand it across opaquely.
+        return @ptrCast(self.view);
+    }
+    fn setViewportSize(ctx: *anyopaque, width: c_int, height: c_int) void {
+        // The embedded WebView tracks its allocated size from GTK layout; there
+        // is no separate viewport call to make for the webview backend. Kept as
+        // a no-op so the seam method exists for `WezigRenderer` (ADR-0006).
+        _ = ctx;
+        _ = width;
+        _ = height;
+    }
+    fn setLifecycleCallback(ctx: *anyopaque, cb: seam.LifecycleCallback) void {
+        const self: *SystemWebviewRenderer = @ptrCast(@alignCast(ctx));
+        self.cb = cb;
+    }
+
+    fn emit(self: *SystemWebviewRenderer, event: seam.LifecycleEvent) void {
+        if (self.cb) |cb| cb.onEvent(cb.ctx, event);
+    }
+
+    // --- WebKit signals -> seam lifecycle events ---
+
+    fn onLoadChanged(_: *c.WebKitWebView, load_event: c.WebKitLoadEvent, data: c.gpointer) callconv(.c) void {
+        const self: *SystemWebviewRenderer = @ptrCast(@alignCast(data));
+        const uri_c = c.webkit_web_view_get_uri(self.view);
+        const uri: ?[]const u8 = if (uri_c) |u| std.mem.span(u) else null;
+        const state: seam.LoadState = switch (load_event) {
+            c.WEBKIT_LOAD_STARTED => .started,
+            c.WEBKIT_LOAD_COMMITTED => .committed,
+            c.WEBKIT_LOAD_FINISHED => .finished,
+            else => return,
+        };
+        self.emit(.{ .load_changed = .{ .state = state, .uri = uri } });
+    }
+
+    fn onNotifyTitle(_: *c.GObject, _: *c.GParamSpec, data: c.gpointer) callconv(.c) void {
+        const self: *SystemWebviewRenderer = @ptrCast(@alignCast(data));
+        if (c.webkit_web_view_get_title(self.view)) |t| {
+            self.emit(.{ .title_changed = std.mem.span(t) });
+        }
+    }
+
+    fn onNotifyUri(_: *c.GObject, _: *c.GParamSpec, data: c.gpointer) callconv(.c) void {
+        const self: *SystemWebviewRenderer = @ptrCast(@alignCast(data));
+        if (c.webkit_web_view_get_uri(self.view)) |u| {
+            self.emit(.{ .uri_changed = std.mem.span(u) });
+        }
+    }
+
+    fn onNotifyProgress(_: *c.GObject, _: *c.GParamSpec, data: c.gpointer) callconv(.c) void {
+        const self: *SystemWebviewRenderer = @ptrCast(@alignCast(data));
+        self.emit(.{ .progress_changed = c.webkit_web_view_get_estimated_load_progress(self.view) });
+    }
+};
+
+/// `g_signal_connect` is a macro over `g_signal_connect_data`; replicate it.
+/// (Same helper `shell.zig` uses; each webview/gtk file owns its own copy so
+/// the seam files stay independent.)
+fn signalConnect(instance: c.gpointer, detailed_signal: [*:0]const u8, handler: c.GCallback, data: c.gpointer) void {
+    _ = c.g_signal_connect_data(instance, detailed_signal, handler, data, null, 0);
+}

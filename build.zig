@@ -76,19 +76,26 @@ pub fn build(b: *std.Build) void {
     const gen_step = b.step("gen-goldens", "Regenerate committed golden reference PNGs");
     gen_step.dependOn(&run_gen.step);
 
-    // --- Webview SHELL: WebKitGTK 6.0 / GTK4 (ADR-0005 tracer bullet) -----
-    // The `Renderer`-seam exploration's thin vertical spike: a GTK4 window
-    // hosting a `WebKitWebView` that loads one real, interactive page. Like
-    // SDL (above), the webview is an on-screen host path, so it links into a
-    // NEW shell executable ONLY -- NEVER the `wezig` library module. That is
-    // what keeps the v0 SDL render path and the headless golden tests (which
-    // live in the library) completely free of WebKitGTK, and keeps the core
-    // `zig build test` gate display-free. Unlike SDL (built from source), this
-    // is a SYSTEM dependency: `linkSystemLibrary("webkitgtk-6.0")` resolves it
-    // (and GTK4 + GLib) via pkg-config. Requires `libwebkitgtk-6.0-dev`.
+    // --- Webview SHELL: WebKitGTK 6.0 / GTK4 (ADR-0005/0006, two seams) ----
+    // The webview shell: a minimal chrome (window + URL bar + back/forward)
+    // driving a real page through TWO seams -- the `Renderer` seam (content;
+    // `SystemWebviewRenderer` on WebKitGTK) and the `Toolkit` seam (chrome
+    // host + windowing; `GtkToolkit` on GTK4). Both backend files + the shell's
+    // smoke snapshot are the ONLY WebKitGTK/GTK touchers; the chrome talks to
+    // the seams alone. Like SDL (above), these are on-screen host paths, so
+    // they link into the shell executables ONLY -- NEVER the `wezig` library
+    // module. That keeps the v0 SDL render path and the headless golden tests
+    // (which live in the library) completely free of WebKitGTK/GTK, and keeps
+    // the core `zig build test` gate display-free (the seam-contract tests use
+    // fake in-memory backends and run inside `zig build test`). Unlike SDL
+    // (built from source), this is a SYSTEM dependency:
+    // `linkSystemLibrary("webkitgtk-6.0")` resolves it (and GTK4 + GLib) via
+    // pkg-config. Requires `libwebkitgtk-6.0-dev`. The two backend files
+    // (`system_webview_renderer.zig`, `gtk_toolkit.zig`) are pulled in
+    // transitively via `shell.zig`, so no extra `addImport` is needed.
     //
     // `shell_options.smoke` selects the mode: the interactive `shell` step and
-    // the headless `shell-test` step share ONE binding and ONE window path.
+    // the headless `shell-test` step share ONE set of bindings and ONE chrome.
     const shell_opts_interactive = b.addOptions();
     shell_opts_interactive.addOption(bool, "smoke", false);
     const shell_opts_smoke = b.addOptions();
@@ -111,17 +118,18 @@ pub fn build(b: *std.Build) void {
     // pkg-config resolves webkitgtk-6.0 + GTK4 + GLib headers and libs.
     shell_exe.root_module.linkSystemLibrary("webkitgtk-6.0", .{});
     const run_shell = b.addRunArtifact(shell_exe);
-    const shell_step = b.step("shell", "Open the WebKitGTK webview shell window (ADR-0005)");
+    const shell_step = b.step("shell", "Open the webview shell (minimal chrome over the two seams; ADR-0005/0006)");
     shell_step.dependOn(&run_shell.step);
 
     // The SAME shell binary in smoke mode (`zig build shell-test`). Kept OUT of
     // `zig build test` on purpose: WebKitGTK has NO native headless mode and
     // `GtkOffscreenWindow` does not work with a WebView (WebKit bug #76911), so
     // this MUST run under a virtual X display. We wrap it in `xvfb-run` so the
-    // step is self-contained. NOTE: `xvfb` (`xvfb-run`) is a SYSTEM PROVISION
-    // this step needs and is NOT yet installed on the dev box or in CI; until
-    // `xvfb` is provisioned this step will fail to find `xvfb-run`. The
-    // interactive `zig build shell` step above does NOT need Xvfb.
+    // step is self-contained. It navigates a page THROUGH the `Renderer` seam,
+    // asserts the seam's `.finished` lifecycle event reached a subscriber, and
+    // snapshots the view non-blank. `xvfb` (`xvfb-run`) is a SYSTEM PROVISION
+    // this step needs; it is now installed on the dev box. The interactive
+    // `zig build shell` step above does NOT need Xvfb.
     const shell_test_exe = b.addExecutable(.{
         .name = "wezig-shell-test",
         .root_module = b.createModule(.{
