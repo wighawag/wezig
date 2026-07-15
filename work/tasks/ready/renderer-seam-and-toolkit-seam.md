@@ -6,6 +6,8 @@ blockedBy: [webview-hello-window]
 covers: [1, 2, 3, 5, 6]
 ---
 
+> **FORWARD-NOTE (display / windowing during verification).** `xvfb` IS now installed (`/usr/bin/xvfb-run`), so run EVERY display-needing check headlessly via `xvfb-run` (e.g. `zig build shell-test` and any seam-level navigation test) and do NOT pop a visible window at the human. Context: on an earlier aborted attempt the human closed a few interactive shell windows manually; they will NOT be closing anything this time. Therefore any step that opens a window and waits for it to close (e.g. the interactive `zig build shell`, whose main loop blocks until the window's `destroy` fires) MUST NOT be used as an automated verification gate here, because it will block forever with no one to close it. If you need to prove a window renders, use the headless `xvfb-run` snapshot path (load-finished + non-blank snapshot, as in the hello-window smoke test) with an explicit TIMEOUT so it fails loudly instead of hanging. Reserve interactive `zig build shell` for human-driven checks only.
+
 ## What to build
 
 Extract the hello-window's ad-hoc WebKitGTK/GTK calls behind TWO seams (the "seam everything" theme), so both are swappable, and record the pinned interfaces in an ADR:
