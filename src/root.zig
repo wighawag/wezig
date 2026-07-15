@@ -50,6 +50,11 @@ pub const chrome = @import("chrome.zig");
 /// diagnostic code the code enforces, so the contract cannot silently drift.
 pub const docs = @import("docs.zig");
 
+/// Swap-discipline guard (ADR-0005/0006): fails the gate if `src/chrome.zig`
+/// reaches past the `Renderer`/`Toolkit` seams into the `webkit` or `gtk`
+/// bindings, so both the content-backend and chrome-toolkit swaps stay cheap.
+pub const chrome_conformance = @import("chrome_conformance.zig");
+
 /// Trivial placeholder so `zig build test` has real behaviour to assert on.
 /// Replaced/extended by the first real subsystem task.
 pub fn add(a: i32, b: i32) i32 {
@@ -71,6 +76,7 @@ test {
     _ = surface;
     _ = paint;
     _ = docs;
+    _ = chrome_conformance;
     _ = renderer;
     _ = toolkit;
     _ = chrome;
