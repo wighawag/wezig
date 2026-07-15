@@ -94,61 +94,86 @@ pub fn build(b: *std.Build) void {
     // (`system_webview_renderer.zig`, `gtk_toolkit.zig`) are pulled in
     // transitively via `shell.zig`, so no extra `addImport` is needed.
     //
-    // `shell_options.smoke` selects the mode: the interactive `shell` step and
-    // the headless `shell-test` step share ONE set of bindings and ONE chrome.
-    const shell_opts_interactive = b.addOptions();
-    shell_opts_interactive.addOption(bool, "smoke", false);
-    const shell_opts_smoke = b.addOptions();
-    shell_opts_smoke.addOption(bool, "smoke", true);
+    // `shell_options.mode` selects the mode: the interactive `shell` step and
+    // the headless verification steps (`shell-test`, `shell-bridge-test`,
+    // `shell-scheme-test`) all share ONE set of bindings and ONE chrome. A
+    // small local helper builds the shell exe for a given mode so the four
+    // steps stay identical except for that one option + (for the verify steps)
+    // the `xvfb-run` wrapper.
+    const ShellBuild = struct {
+        b: *std.Build,
+        mod: *std.Build.Module,
+        target: std.Build.ResolvedTarget,
+        optimize: std.builtin.OptimizeMode,
+        fn make(self: @This(), name: []const u8, mode: []const u8) *std.Build.Step.Compile {
+            const opts = self.b.addOptions();
+            opts.addOption([]const u8, "mode", mode);
+            const e = self.b.addExecutable(.{
+                .name = name,
+                .root_module = self.b.createModule(.{
+                    .root_source_file = self.b.path("src/shell_main.zig"),
+                    .target = self.target,
+                    .optimize = self.optimize,
+                    .imports = &.{.{ .name = "wezig", .module = self.mod }},
+                }),
+            });
+            e.root_module.addImport("shell_options", opts.createModule());
+            e.root_module.link_libc = true;
+            // WebKitGTK's `@cImport` bridge (`src/webkit_c.h`) lives in `src/`.
+            e.root_module.addIncludePath(self.b.path("src"));
+            // pkg-config resolves webkitgtk-6.0 + GTK4 + GLib headers and libs.
+            e.root_module.linkSystemLibrary("webkitgtk-6.0", .{});
+            return e;
+        }
+    };
+    const shell_build = ShellBuild{ .b = b, .mod = mod, .target = target, .optimize = optimize };
 
     // The interactive shell executable (`zig build shell`).
-    const shell_exe = b.addExecutable(.{
-        .name = "wezig-shell",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/shell_main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{.{ .name = "wezig", .module = mod }},
-        }),
-    });
-    shell_exe.root_module.addImport("shell_options", shell_opts_interactive.createModule());
-    shell_exe.root_module.link_libc = true;
-    // WebKitGTK's `@cImport` bridge (`src/webkit_c.h`) lives in `src/`.
-    shell_exe.root_module.addIncludePath(b.path("src"));
-    // pkg-config resolves webkitgtk-6.0 + GTK4 + GLib headers and libs.
-    shell_exe.root_module.linkSystemLibrary("webkitgtk-6.0", .{});
+    const shell_exe = shell_build.make("wezig-shell", "interactive");
     const run_shell = b.addRunArtifact(shell_exe);
     const shell_step = b.step("shell", "Open the webview shell (minimal chrome over the two seams; ADR-0005/0006)");
     shell_step.dependOn(&run_shell.step);
 
-    // The SAME shell binary in smoke mode (`zig build shell-test`). Kept OUT of
-    // `zig build test` on purpose: WebKitGTK has NO native headless mode and
-    // `GtkOffscreenWindow` does not work with a WebView (WebKit bug #76911), so
-    // this MUST run under a virtual X display. We wrap it in `xvfb-run` so the
-    // step is self-contained. It navigates a page THROUGH the `Renderer` seam,
-    // asserts the seam's `.finished` lifecycle event reached a subscriber, and
-    // snapshots the view non-blank. `xvfb` (`xvfb-run`) is a SYSTEM PROVISION
-    // this step needs; it is now installed on the dev box. The interactive
-    // `zig build shell` step above does NOT need Xvfb.
-    const shell_test_exe = b.addExecutable(.{
-        .name = "wezig-shell-test",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/shell_main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{.{ .name = "wezig", .module = mod }},
-        }),
-    });
-    shell_test_exe.root_module.addImport("shell_options", shell_opts_smoke.createModule());
-    shell_test_exe.root_module.link_libc = true;
-    shell_test_exe.root_module.addIncludePath(b.path("src"));
-    shell_test_exe.root_module.linkSystemLibrary("webkitgtk-6.0", .{});
-    // `xvfb-run -a <binary>`: -a picks a free display number automatically.
-    const run_shell_test = b.addSystemCommand(&.{ "xvfb-run", "-a" });
-    run_shell_test.addArtifactArg(shell_test_exe);
-    run_shell_test.expectExitCode(0);
-    const shell_test_step = b.step("shell-test", "Headless WebKitGTK smoke test under Xvfb (needs xvfb-run; NOT in `test`)");
-    shell_test_step.dependOn(&run_shell_test.step);
+    // The headless verification steps. All are kept OUT of `zig build test` on
+    // purpose: WebKitGTK has NO native headless mode and `GtkOffscreenWindow`
+    // does not work with a WebView (WebKit bug #76911), so they MUST run under a
+    // virtual X display. Each wraps the shell binary (in its own mode) in
+    // `xvfb-run` so the step is self-contained. `xvfb` (`xvfb-run`) is a SYSTEM
+    // PROVISION these steps need; it is installed on the dev box. The
+    // interactive `zig build shell` step above does NOT need Xvfb.
+    //
+    //   - `shell-test`        navigates THROUGH the `Renderer` seam, asserts the
+    //                         seam's `.finished` lifecycle event reached a
+    //                         subscriber, and snapshots the view non-blank.
+    //   - `shell-bridge-test` proves the seam's script-message bridge hook
+    //                         (ADR-0005) round-trips both ways through the real
+    //                         WebKitGTK backend (`window.wezig.ping`).
+    //   - `shell-scheme-test` proves the seam's custom-scheme interception hook
+    //                         (ADR-0005) serves a native body that renders
+    //                         (`wezig-test://hello`).
+    // The seam-CONTRACT tests (both hooks exist + round-trip through a fake
+    // backend) live in `renderer.zig`'s `zig build test` block; these prove the
+    // real backend.
+    const VerifyStep = struct {
+        name: []const u8,
+        exe_name: []const u8,
+        mode: []const u8,
+        desc: []const u8,
+    };
+    const verify_steps = [_]VerifyStep{
+        .{ .name = "shell-test", .exe_name = "wezig-shell-test", .mode = "smoke", .desc = "Headless WebKitGTK smoke test under Xvfb (needs xvfb-run; NOT in `test`)" },
+        .{ .name = "shell-bridge-test", .exe_name = "wezig-shell-bridge-test", .mode = "bridge", .desc = "Headless script-message bridge proof under Xvfb (ADR-0005; NOT in `test`)" },
+        .{ .name = "shell-scheme-test", .exe_name = "wezig-shell-scheme-test", .mode = "scheme", .desc = "Headless custom-scheme interception proof under Xvfb (ADR-0005; NOT in `test`)" },
+    };
+    for (verify_steps) |vs| {
+        const vexe = shell_build.make(vs.exe_name, vs.mode);
+        // `xvfb-run -a <binary>`: -a picks a free display number automatically.
+        const run_v = b.addSystemCommand(&.{ "xvfb-run", "-a" });
+        run_v.addArtifactArg(vexe);
+        run_v.expectExitCode(0);
+        const step = b.step(vs.name, vs.desc);
+        step.dependOn(&run_v.step);
+    }
 
     // --- PROTOTYPE (throwaway, ADR-0004): a native X11 window with NO SDL ---
     // `zig build proto-x11` builds prototypes/x11_window.zig, which presents the

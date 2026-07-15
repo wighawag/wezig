@@ -2,12 +2,16 @@
 //! the minimal chrome over the two seams (`Renderer` + `Toolkit`); the wiring
 //! and headless verification live in `shell.zig`.
 //!
-//! One executable, two modes, chosen at build time by the `shell_options.smoke`
-//! flag so the two build steps share exactly one set of bindings + one window
-//! path:
-//!   - `zig build shell`      -> smoke = false -> `runShell` (interactive).
-//!   - `zig build shell-test` -> smoke = true  -> `smokeTest` (headless verify,
-//!                                                run under `xvfb-run`).
+//! One executable, several modes, chosen at build time by the
+//! `shell_options.mode` string so every build step shares exactly one set of
+//! bindings + one window path:
+//!   - `zig build shell`             -> "interactive" -> `runShell`.
+//!   - `zig build shell-test`        -> "smoke"       -> `smokeTest` (headless
+//!                                       navigate + snapshot; under `xvfb-run`).
+//!   - `zig build shell-bridge-test` -> "bridge"      -> `bridgeTest` (headless
+//!                                       script-message bridge proof; xvfb).
+//!   - `zig build shell-scheme-test` -> "scheme"      -> `schemeTest` (headless
+//!                                       custom-scheme interception proof; xvfb).
 //! WebKitGTK/GTK are linked ONLY into THIS executable; the `wezig` library, the
 //! v0 SDL app, and the golden tests never see them (see `build.zig`).
 
@@ -15,19 +19,38 @@ const std = @import("std");
 const shell = @import("shell.zig");
 const options = @import("shell_options");
 
+/// The selected mode. A build-time string keeps ONE selector for N modes (vs a
+/// fan of booleans); each build step sets exactly one value.
+const Mode = enum { interactive, smoke, bridge, scheme };
+
 pub fn main() !void {
-    if (options.smoke) {
-        var gpa_state: std.heap.DebugAllocator(.{}) = .init;
-        defer _ = gpa_state.deinit();
-        shell.smokeTest(gpa_state.allocator()) catch |err| {
-            std.log.err("shell smoke test FAILED: {s}", .{@errorName(err)});
-            return err;
-        };
-        std.log.info("shell smoke test PASSED: page loaded and snapshot is non-blank.", .{});
-    } else {
-        shell.runShell() catch |err| {
+    const mode = std.meta.stringToEnum(Mode, options.mode) orelse {
+        std.log.err("unknown shell mode '{s}'", .{options.mode});
+        return error.UnknownShellMode;
+    };
+    switch (mode) {
+        .interactive => shell.runShell() catch |err| {
             std.log.err("could not run the webview shell ({s}); is a display available?", .{@errorName(err)});
             return err;
-        };
+        },
+        .smoke => try runVerify("smoke", shell.smokeTest, "page loaded and snapshot is non-blank"),
+        .bridge => try runVerify("bridge", shell.bridgeTest, "script-message bridge round-tripped both ways"),
+        .scheme => try runVerify("scheme", shell.schemeTest, "custom scheme served from native and rendered"),
     }
+}
+
+/// Run one headless verification mode, logging a uniform PASS/FAIL line and
+/// turning its verdict into the process exit code.
+fn runVerify(
+    name: []const u8,
+    verify: *const fn (std.mem.Allocator) shell.ShellError!void,
+    pass_msg: []const u8,
+) !void {
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    verify(gpa_state.allocator()) catch |err| {
+        std.log.err("shell {s} test FAILED: {s}", .{ name, @errorName(err) });
+        return err;
+    };
+    std.log.info("shell {s} test PASSED: {s}.", .{ name, pass_msg });
 }
