@@ -76,6 +76,72 @@ pub fn build(b: *std.Build) void {
     const gen_step = b.step("gen-goldens", "Regenerate committed golden reference PNGs");
     gen_step.dependOn(&run_gen.step);
 
+    // --- Webview SHELL: WebKitGTK 6.0 / GTK4 (ADR-0005 tracer bullet) -----
+    // The `Renderer`-seam exploration's thin vertical spike: a GTK4 window
+    // hosting a `WebKitWebView` that loads one real, interactive page. Like
+    // SDL (above), the webview is an on-screen host path, so it links into a
+    // NEW shell executable ONLY -- NEVER the `wezig` library module. That is
+    // what keeps the v0 SDL render path and the headless golden tests (which
+    // live in the library) completely free of WebKitGTK, and keeps the core
+    // `zig build test` gate display-free. Unlike SDL (built from source), this
+    // is a SYSTEM dependency: `linkSystemLibrary("webkitgtk-6.0")` resolves it
+    // (and GTK4 + GLib) via pkg-config. Requires `libwebkitgtk-6.0-dev`.
+    //
+    // `shell_options.smoke` selects the mode: the interactive `shell` step and
+    // the headless `shell-test` step share ONE binding and ONE window path.
+    const shell_opts_interactive = b.addOptions();
+    shell_opts_interactive.addOption(bool, "smoke", false);
+    const shell_opts_smoke = b.addOptions();
+    shell_opts_smoke.addOption(bool, "smoke", true);
+
+    // The interactive shell executable (`zig build shell`).
+    const shell_exe = b.addExecutable(.{
+        .name = "wezig-shell",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/shell_main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "wezig", .module = mod }},
+        }),
+    });
+    shell_exe.root_module.addImport("shell_options", shell_opts_interactive.createModule());
+    shell_exe.root_module.link_libc = true;
+    // WebKitGTK's `@cImport` bridge (`src/webkit_c.h`) lives in `src/`.
+    shell_exe.root_module.addIncludePath(b.path("src"));
+    // pkg-config resolves webkitgtk-6.0 + GTK4 + GLib headers and libs.
+    shell_exe.root_module.linkSystemLibrary("webkitgtk-6.0", .{});
+    const run_shell = b.addRunArtifact(shell_exe);
+    const shell_step = b.step("shell", "Open the WebKitGTK webview shell window (ADR-0005)");
+    shell_step.dependOn(&run_shell.step);
+
+    // The SAME shell binary in smoke mode (`zig build shell-test`). Kept OUT of
+    // `zig build test` on purpose: WebKitGTK has NO native headless mode and
+    // `GtkOffscreenWindow` does not work with a WebView (WebKit bug #76911), so
+    // this MUST run under a virtual X display. We wrap it in `xvfb-run` so the
+    // step is self-contained. NOTE: `xvfb` (`xvfb-run`) is a SYSTEM PROVISION
+    // this step needs and is NOT yet installed on the dev box or in CI; until
+    // `xvfb` is provisioned this step will fail to find `xvfb-run`. The
+    // interactive `zig build shell` step above does NOT need Xvfb.
+    const shell_test_exe = b.addExecutable(.{
+        .name = "wezig-shell-test",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/shell_main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "wezig", .module = mod }},
+        }),
+    });
+    shell_test_exe.root_module.addImport("shell_options", shell_opts_smoke.createModule());
+    shell_test_exe.root_module.link_libc = true;
+    shell_test_exe.root_module.addIncludePath(b.path("src"));
+    shell_test_exe.root_module.linkSystemLibrary("webkitgtk-6.0", .{});
+    // `xvfb-run -a <binary>`: -a picks a free display number automatically.
+    const run_shell_test = b.addSystemCommand(&.{ "xvfb-run", "-a" });
+    run_shell_test.addArtifactArg(shell_test_exe);
+    run_shell_test.expectExitCode(0);
+    const shell_test_step = b.step("shell-test", "Headless WebKitGTK smoke test under Xvfb (needs xvfb-run; NOT in `test`)");
+    shell_test_step.dependOn(&run_shell_test.step);
+
     // --- PROTOTYPE (throwaway, ADR-0004): a native X11 window with NO SDL ---
     // `zig build proto-x11` builds prototypes/x11_window.zig, which presents the
     // same `renderScene` Surface via Xlib, linking ONLY the OS's libX11. It is
