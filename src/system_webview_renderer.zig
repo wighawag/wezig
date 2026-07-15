@@ -30,6 +30,12 @@ const c = @cImport({
 pub const SystemWebviewRenderer = struct {
     view: *c.WebKitWebView,
     cb: ?seam.LifecycleCallback = null,
+    /// The single page->native script-message handler (script bridge, ADR-0005).
+    /// One channel today (the provider's `request` channel); a set can replace
+    /// this if more channels are ever needed.
+    msg_cb: ?seam.ScriptMessageCallback = null,
+    /// The single custom-scheme handler (request interception, ADR-0005).
+    scheme_handler: ?seam.SchemeHandler = null,
 
     /// Create the underlying `WebKitWebView`. GTK must already be initialised
     /// (the toolkit's `createWindow` does that); a `WebKitWebView` is a GTK
@@ -60,6 +66,10 @@ pub const SystemWebviewRenderer = struct {
         .view = viewHandle,
         .setViewportSize = setViewportSize,
         .setLifecycleCallback = setLifecycleCallback,
+        .injectUserScript = injectUserScript,
+        .setScriptMessageHandler = setScriptMessageHandler,
+        .evaluateScript = evaluateScript,
+        .registerScheme = registerScheme,
     };
 
     fn navigate(ctx: *anyopaque, uri: [*:0]const u8) void {
@@ -110,6 +120,92 @@ pub const SystemWebviewRenderer = struct {
 
     fn emit(self: *SystemWebviewRenderer, event: seam.LifecycleEvent) void {
         if (self.cb) |cb| cb.onEvent(cb.ctx, event);
+    }
+
+    // --- script-message bridge (ADR-0005) ---
+    // WebKitGTK maps this onto the view's `WebKitUserContentManager`: injected
+    // user scripts set up the page-world object, `register_script_message_handler`
+    // opens the `window.webkit.messageHandlers.<name>` channel, and the
+    // `script-message-received::<name>` signal delivers the page's messages.
+
+    fn injectUserScript(ctx: *anyopaque, source: [*:0]const u8) void {
+        const self: *SystemWebviewRenderer = @ptrCast(@alignCast(ctx));
+        const ucm = c.webkit_web_view_get_user_content_manager(self.view);
+        const script = c.webkit_user_script_new(
+            source,
+            c.WEBKIT_USER_CONTENT_INJECT_TOP_FRAME,
+            c.WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START,
+            null,
+            null,
+        );
+        c.webkit_user_content_manager_add_script(ucm, script);
+        c.webkit_user_script_unref(script);
+    }
+
+    fn setScriptMessageHandler(ctx: *anyopaque, name: [*:0]const u8, cb: seam.ScriptMessageCallback) void {
+        const self: *SystemWebviewRenderer = @ptrCast(@alignCast(ctx));
+        self.msg_cb = cb;
+        const ucm = c.webkit_web_view_get_user_content_manager(self.view);
+        // Connect BEFORE registering (the docs' race-avoidance ordering). The
+        // signal detail is the channel name, so `::<name>` targets this channel.
+        var buf: [128]u8 = undefined;
+        const nm = std.mem.span(name);
+        const detailed = std.fmt.bufPrintZ(&buf, "script-message-received::{s}", .{nm}) catch return;
+        signalConnect(@ptrCast(ucm), detailed, @ptrCast(&onScriptMessage), self);
+        _ = c.webkit_user_content_manager_register_script_message_handler(ucm, name, null);
+    }
+
+    fn evaluateScript(ctx: *anyopaque, source: [*:0]const u8) void {
+        const self: *SystemWebviewRenderer = @ptrCast(@alignCast(ctx));
+        c.webkit_web_view_evaluate_javascript(self.view, source, -1, null, null, null, null, null);
+    }
+
+    /// `script-message-received::<name>` handler: WebKitGTK passes the posted
+    /// value as a `JSCValue`. We forward its string form to the seam callback.
+    fn onScriptMessage(ucm: *c.WebKitUserContentManager, value: *c.JSCValue, data: c.gpointer) callconv(.c) void {
+        _ = ucm;
+        const self: *SystemWebviewRenderer = @ptrCast(@alignCast(data));
+        const cb = self.msg_cb orelse return;
+        const str_c = c.jsc_value_to_string(value) orelse return;
+        defer c.g_free(str_c);
+        // The channel name is not carried on the value; we have exactly one
+        // channel today, so report it under the provider's convention.
+        cb.onMessage(cb.ctx, "wezig", std.mem.span(str_c));
+    }
+
+    // --- request-interception / custom-scheme hook (ADR-0005) ---
+    // WebKitGTK maps this onto the view's `WebKitWebContext`:
+    // `register_uri_scheme` installs a native callback that serves each request
+    // by finishing it with a `GInputStream` over the native-generated body.
+
+    fn registerScheme(ctx: *anyopaque, scheme: [*:0]const u8, handler: seam.SchemeHandler) void {
+        const self: *SystemWebviewRenderer = @ptrCast(@alignCast(ctx));
+        self.scheme_handler = handler;
+        const context = c.webkit_web_view_get_context(self.view);
+        c.webkit_web_context_register_uri_scheme(context, scheme, @ptrCast(&onSchemeRequest), self, null);
+    }
+
+    /// `WebKitURISchemeRequestCallback`: ask the seam handler for the native body
+    /// + content-type for this URI and finish the request with an input stream
+    /// over a copy of those bytes (WebKit reads the stream asynchronously, so the
+    /// buffer must outlive this call; `g_memory_input_stream_new_from_data` with
+    /// `g_free` as the destructor owns the copy).
+    fn onSchemeRequest(request: *c.WebKitURISchemeRequest, data: c.gpointer) callconv(.c) void {
+        const self: *SystemWebviewRenderer = @ptrCast(@alignCast(data));
+        const handler = self.scheme_handler orelse return;
+        const uri = c.webkit_uri_scheme_request_get_uri(request);
+        const resp = handler.onRequest(handler.ctx, std.mem.span(uri));
+
+        // Copy the body into a GLib-owned buffer the stream frees when done.
+        const copy = c.g_malloc(resp.body.len);
+        const dst: [*]u8 = @ptrCast(copy);
+        @memcpy(dst[0..resp.body.len], resp.body);
+        const stream = c.g_memory_input_stream_new_from_data(copy, @intCast(resp.body.len), c.g_free);
+
+        var ct_buf: [128]u8 = undefined;
+        const content_type = std.fmt.bufPrintZ(&ct_buf, "{s}", .{resp.content_type}) catch "text/plain";
+        c.webkit_uri_scheme_request_finish(request, stream, @intCast(resp.body.len), content_type);
+        c.g_object_unref(stream);
     }
 
     // --- WebKit signals -> seam lifecycle events ---

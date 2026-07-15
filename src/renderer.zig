@@ -28,13 +28,29 @@
 //!   - load lifecycle EVENTS: `setLifecycleCallback` delivers title / URL /
 //!                   progress / load-state changes the chrome subscribes to.
 //!
-//! ## Deliberately NOT here yet (next task)
+//! ## The two web3-load-bearing hooks (this task, ADR-0005)
 //!
-//! The script-message bridge (inject a page-world provider, receive `request`
-//! calls) and the request-interception / custom-scheme hook (`ipfs://`, wallet
-//! RPC) are what `explore-web3-capabilities` depends on. ADR-0005 pins them to
-//! the seam, but they are a SEPARATE task; this task starts the interface
-//! MINIMAL and proves it, so they are intentionally absent here.
+//! The minimal navigate/interact surface above is joined by the TWO hooks
+//! `explore-web3-capabilities` builds on. ADR-0005 pins BOTH to this seam so the
+//! Ethereum provider (EIP-1193) and `ipfs://` are served THROUGH the interface
+//! and keep working after the `WezigRenderer` swap, never as one-off webview
+//! calls in the chrome:
+//!
+//!   - **script-message bridge:** inject a page-world script (`injectUserScript`)
+//!     so a native object like `window.wezig` exists on the page, register a
+//!     named page->native channel (`setScriptMessageHandler`), and evaluate JS
+//!     back into the page (`evaluateScript`) to post a native result. Together
+//!     these round-trip a message BOTH ways: the page posts to native, native
+//!     replies into the page. (WebKitGTK: `WebKitUserContentManager` handlers +
+//!     user scripts; proven with a trivial `window.wezig.ping()`.)
+//!   - **request-interception / custom-scheme hook:** register a custom URI
+//!     scheme (`registerScheme`) whose requests are served by a native handler
+//!     returning a body + content-type. (WebKitGTK:
+//!     `webkit_web_context_register_uri_scheme` + a `WebKitURISchemeRequestCallback`;
+//!     proven with a trivial `wezig-test://hello`.)
+//!
+//! Both are on the VTable so `WezigRenderer` must satisfy them later; only the
+//! WebKitGTK backend (`system_webview_renderer.zig`) knows the concrete APIs.
 
 const std = @import("std");
 
@@ -84,6 +100,37 @@ pub const LifecycleCallback = struct {
     onEvent: *const fn (ctx: *anyopaque, event: LifecycleEvent) void,
 };
 
+/// A message posted from the page world to native over a named script-message
+/// channel (the script-message bridge, ADR-0005). `name` is the channel the
+/// handler was registered under; `body` is the message's string payload,
+/// borrowed for the callback's duration (the backend owns the storage, so a
+/// handler that keeps it must copy). This is the page->native leg of the bridge
+/// the EIP-1193 provider uses to deliver `request` calls; native replies into
+/// the page with `evaluateScript`.
+pub const ScriptMessageCallback = struct {
+    ctx: *anyopaque,
+    onMessage: *const fn (ctx: *anyopaque, name: []const u8, body: []const u8) void,
+};
+
+/// A native-served response to a custom-scheme request (the request-interception
+/// hook, ADR-0005). The scheme handler returns this for each request URI: the
+/// `body` bytes native generates and the `content_type` to serve them as (e.g.
+/// `text/html`). Both slices must stay valid until the handler is next called
+/// (the backend copies them immediately into its own request response). This is
+/// how `ipfs://` (and wallet RPC endpoints) are served from native code.
+pub const SchemeResponse = struct {
+    body: []const u8,
+    content_type: []const u8,
+};
+
+/// A native handler for a registered custom URI scheme. `onRequest` is invoked
+/// with the full request `uri` and returns the `SchemeResponse` native serves
+/// for it. Kept a plain pair (like `LifecycleCallback`): one handler per scheme.
+pub const SchemeHandler = struct {
+    ctx: *anyopaque,
+    onRequest: *const fn (ctx: *anyopaque, uri: []const u8) SchemeResponse,
+};
+
 /// The `Renderer` seam value: a context pointer plus a function-pointer table,
 /// exactly like `PaintBackend` (ADR-0002). Construct a backend, obtain this
 /// value from it, and hand it to the chrome; the chrome talks only to these
@@ -123,6 +170,25 @@ pub const Renderer = struct {
         /// Subscribe the chrome to load-lifecycle events. At most one sink; a
         /// later call replaces the previous one.
         setLifecycleCallback: *const fn (ctx: *anyopaque, cb: LifecycleCallback) void,
+
+        // --- script-message bridge (ADR-0005) ---
+        /// Inject `source` into every page's world at document start, so a
+        /// native page-world object (e.g. `window.wezig`) exists before page
+        /// scripts run. This is the native->page setup leg of the bridge.
+        injectUserScript: *const fn (ctx: *anyopaque, source: [*:0]const u8) void,
+        /// Register the page->native channel `name`: the page posts to it and
+        /// `cb` is invoked with the message body. At most one handler per name;
+        /// a later call with the same name replaces it.
+        setScriptMessageHandler: *const fn (ctx: *anyopaque, name: [*:0]const u8, cb: ScriptMessageCallback) void,
+        /// Evaluate `source` as JS in the current page, e.g. to post a native
+        /// result back into the page (the native->page reply leg).
+        evaluateScript: *const fn (ctx: *anyopaque, source: [*:0]const u8) void,
+
+        // --- request-interception / custom-scheme hook (ADR-0005) ---
+        /// Register the custom URI scheme `scheme` (e.g. `ipfs`): every request
+        /// for it is served by `handler` from native code. At most one handler
+        /// per scheme.
+        registerScheme: *const fn (ctx: *anyopaque, scheme: [*:0]const u8, handler: SchemeHandler) void,
     };
 
     // Thin forwarders so callers write `renderer.navigate(...)` not
@@ -157,6 +223,18 @@ pub const Renderer = struct {
     pub fn setLifecycleCallback(self: Renderer, cb: LifecycleCallback) void {
         self.vtable.setLifecycleCallback(self.ptr, cb);
     }
+    pub fn injectUserScript(self: Renderer, source: [*:0]const u8) void {
+        self.vtable.injectUserScript(self.ptr, source);
+    }
+    pub fn setScriptMessageHandler(self: Renderer, name: [*:0]const u8, cb: ScriptMessageCallback) void {
+        self.vtable.setScriptMessageHandler(self.ptr, name, cb);
+    }
+    pub fn evaluateScript(self: Renderer, source: [*:0]const u8) void {
+        self.vtable.evaluateScript(self.ptr, source);
+    }
+    pub fn registerScheme(self: Renderer, scheme: [*:0]const u8, handler: SchemeHandler) void {
+        self.vtable.registerScheme(self.ptr, scheme, handler);
+    }
 };
 
 // ---------------------------------------------------------------------------
@@ -178,6 +256,21 @@ pub const FakeRenderer = struct {
     /// A stable non-null token to hand back as the opaque view handle.
     view_token: u8 = 0,
 
+    // --- script-message bridge state (for the seam-contract tests) ---
+    /// The last user script injected via `injectUserScript` (owned copy).
+    injected_script: ?[]const u8 = null,
+    /// The single registered page->native channel, if any.
+    msg_name: ?[]const u8 = null,
+    msg_cb: ?ScriptMessageCallback = null,
+    /// The last script `evaluateScript` was asked to run (owned copy). Stands in
+    /// for "native posted a reply back into the page".
+    last_evaluated: ?[]const u8 = null,
+
+    // --- custom-scheme interception state ---
+    /// The single registered custom scheme, if any.
+    scheme_name: ?[]const u8 = null,
+    scheme_handler: ?SchemeHandler = null,
+
     pub fn init(gpa: std.mem.Allocator) FakeRenderer {
         return .{ .gpa = gpa };
     }
@@ -185,6 +278,29 @@ pub const FakeRenderer = struct {
     pub fn deinit(self: *FakeRenderer) void {
         for (self.history.items) |u| self.gpa.free(u);
         self.history.deinit(self.gpa);
+        if (self.injected_script) |s| self.gpa.free(s);
+        if (self.msg_name) |s| self.gpa.free(s);
+        if (self.last_evaluated) |s| self.gpa.free(s);
+        if (self.scheme_name) |s| self.gpa.free(s);
+    }
+
+    // --- test-only simulation of the page side of the two hooks ---
+
+    /// Simulate the page posting `body` on channel `name` (the page->native leg
+    /// of the bridge). Delivers to the registered handler if the channel matches.
+    pub fn firePageMessage(self: *FakeRenderer, name: []const u8, body: []const u8) void {
+        if (self.msg_name) |registered| {
+            if (std.mem.eql(u8, registered, name)) {
+                if (self.msg_cb) |cb| cb.onMessage(cb.ctx, name, body);
+            }
+        }
+    }
+
+    /// Simulate a request for `uri` on the registered custom scheme, returning
+    /// what native would serve (or null if no matching handler is registered).
+    pub fn serveSchemeRequest(self: *FakeRenderer, uri: []const u8) ?SchemeResponse {
+        if (self.scheme_handler) |h| return h.onRequest(h.ctx, uri);
+        return null;
     }
 
     pub fn renderer(self: *FakeRenderer) Renderer {
@@ -202,6 +318,10 @@ pub const FakeRenderer = struct {
         .view = view,
         .setViewportSize = setViewportSize,
         .setLifecycleCallback = setLifecycleCallback,
+        .injectUserScript = injectUserScript,
+        .setScriptMessageHandler = setScriptMessageHandler,
+        .evaluateScript = evaluateScript,
+        .registerScheme = registerScheme,
     };
 
     fn emit(self: *FakeRenderer, event: LifecycleEvent) void {
@@ -283,6 +403,32 @@ pub const FakeRenderer = struct {
         const self: *FakeRenderer = @ptrCast(@alignCast(ctx));
         self.cb = cb;
     }
+
+    fn injectUserScript(ctx: *anyopaque, source: [*:0]const u8) void {
+        const self: *FakeRenderer = @ptrCast(@alignCast(ctx));
+        if (self.injected_script) |s| self.gpa.free(s);
+        self.injected_script = self.gpa.dupe(u8, std.mem.span(source)) catch null;
+    }
+
+    fn setScriptMessageHandler(ctx: *anyopaque, name: [*:0]const u8, cb: ScriptMessageCallback) void {
+        const self: *FakeRenderer = @ptrCast(@alignCast(ctx));
+        if (self.msg_name) |s| self.gpa.free(s);
+        self.msg_name = self.gpa.dupe(u8, std.mem.span(name)) catch null;
+        self.msg_cb = cb;
+    }
+
+    fn evaluateScript(ctx: *anyopaque, source: [*:0]const u8) void {
+        const self: *FakeRenderer = @ptrCast(@alignCast(ctx));
+        if (self.last_evaluated) |s| self.gpa.free(s);
+        self.last_evaluated = self.gpa.dupe(u8, std.mem.span(source)) catch null;
+    }
+
+    fn registerScheme(ctx: *anyopaque, scheme: [*:0]const u8, handler: SchemeHandler) void {
+        const self: *FakeRenderer = @ptrCast(@alignCast(ctx));
+        if (self.scheme_name) |s| self.gpa.free(s);
+        self.scheme_name = self.gpa.dupe(u8, std.mem.span(scheme)) catch null;
+        self.scheme_handler = handler;
+    }
 };
 
 test "FakeRenderer: navigate pushes history and drives back/forward" {
@@ -338,4 +484,73 @@ test "FakeRenderer: lifecycle events reach a subscribed callback" {
     r.navigate("https://page.example/");
     try std.testing.expect(sink.finished >= 1);
     try std.testing.expectEqualStrings("https://page.example/", sink.last_uri[0..sink.last_uri_len]);
+}
+
+test "Renderer seam: the script-message bridge round-trips a message both ways" {
+    // The page->native leg: a page-world call posts a message; native receives
+    // it. The native->page leg: native evaluates a reply script into the page.
+    // This mirrors what `window.wezig.ping()` does over the real bridge, proven
+    // here headlessly through the seam (no webview, no display).
+    const Native = struct {
+        got_name: [32]u8 = undefined,
+        got_name_len: usize = 0,
+        got_body: [32]u8 = undefined,
+        got_body_len: usize = 0,
+        fn onMessage(ctx: *anyopaque, name: []const u8, body: []const u8) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            @memcpy(self.got_name[0..name.len], name);
+            self.got_name_len = name.len;
+            @memcpy(self.got_body[0..body.len], body);
+            self.got_body_len = body.len;
+        }
+    };
+
+    var fr = FakeRenderer.init(std.testing.allocator);
+    defer fr.deinit();
+    const r = fr.renderer();
+
+    // native->page setup: inject the page-world object.
+    r.injectUserScript(
+        \\window.wezig = { ping: function(v) {
+        \\  window.webkit.messageHandlers.wezig.postMessage(v);
+        \\} };
+    );
+    try std.testing.expect(fr.injected_script != null);
+
+    // page->native: register the channel and simulate the page posting to it.
+    var native = Native{};
+    r.setScriptMessageHandler("wezig", .{ .ctx = &native, .onMessage = Native.onMessage });
+    fr.firePageMessage("wezig", "hello-from-page");
+    try std.testing.expectEqualStrings("wezig", native.got_name[0..native.got_name_len]);
+    try std.testing.expectEqualStrings("hello-from-page", native.got_body[0..native.got_body_len]);
+
+    // native->page reply: native evaluates JS back into the page.
+    r.evaluateScript("window.__wezig_reply = 'pong';");
+    try std.testing.expect(fr.last_evaluated != null);
+    try std.testing.expectEqualStrings("window.__wezig_reply = 'pong';", fr.last_evaluated.?);
+}
+
+test "Renderer seam: a registered custom scheme is served from native" {
+    // Register `wezig-test://` and prove a request is served a native body +
+    // content-type through the seam. Mirrors what `ipfs://` will do; proven here
+    // headlessly (the real WebKitGTK scheme is proven under Xvfb).
+    const Native = struct {
+        fn onRequest(ctx: *anyopaque, uri: []const u8) SchemeResponse {
+            _ = ctx;
+            _ = uri;
+            return .{ .body = "<h1>hello from native</h1>", .content_type = "text/html" };
+        }
+    };
+
+    var fr = FakeRenderer.init(std.testing.allocator);
+    defer fr.deinit();
+    const r = fr.renderer();
+
+    var native: u8 = 0;
+    r.registerScheme("wezig-test", .{ .ctx = &native, .onRequest = Native.onRequest });
+    try std.testing.expectEqualStrings("wezig-test", fr.scheme_name.?);
+
+    const resp = fr.serveSchemeRequest("wezig-test://hello").?;
+    try std.testing.expectEqualStrings("<h1>hello from native</h1>", resp.body);
+    try std.testing.expectEqualStrings("text/html", resp.content_type);
 }
