@@ -10,6 +10,14 @@ name: ci
 # setup-zig and runs `zig ...` directly, so the STEPS are identical even though
 # the launcher differs. Keep the pinned version in sync with build.zig.zon's
 # minimum_zig_version.
+#
+# A SECOND job (`webview`) runs the headless WebKitGTK/GTK4 shell proofs
+# (`shell-test`/`shell-bridge-test`/`shell-scheme-test`) under Xvfb. ADR-0007
+# requires these as a DEDICATED leg (they need `xvfb` + `libwebkitgtk-6.0-dev`
+# and are NOT part of the display-free `zig build test` gate); keeping them a
+# separate job means the core gate stays fast + display-free and a webview-path
+# regression is distinguishable from a core regression. The `gate` job is the
+# release-blocking acceptance bar; `webview` guards the optional shell path.
 on:
   push:
     branches:
@@ -33,3 +41,33 @@ jobs:
 
       - name: Run the dorfl.json verify gate (fmt + build + test)
         run: zig fmt --check . && zig build && zig build test
+
+  # The headless webview proofs (ADR-0007): a DEDICATED leg, separate from the
+  # display-free `gate` above. It provisions the shell's system dependencies
+  # (WebKitGTK 6.0 / GTK4 via pkg-config) plus the Xvfb virtual display
+  # (`xvfb-run` needs `xauth`), then runs each `shell-*` step. These build the
+  # shell executable (which links webkitgtk-6.0) and drive a real page through
+  # the two seams under `xvfb-run` — proving the WebKitGTK backend, the
+  # script-message bridge, and the custom-scheme interception end-to-end.
+  webview:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: "0.16.0"
+
+      - name: Install the shell's system dependencies (WebKitGTK 6.0 / GTK4 + Xvfb)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libwebkitgtk-6.0-dev xvfb xauth
+
+      - name: Run the headless shell proofs under Xvfb (NOT in the core gate)
+        run: |
+          zig build shell-test
+          zig build shell-bridge-test
+          zig build shell-scheme-test
