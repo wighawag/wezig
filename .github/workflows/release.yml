@@ -24,10 +24,9 @@ jobs:
           fetch-depth: 0 # goreleaser needs full history + tags for the changelog
 
       - name: Set up Zig
+        # Empty version => resolved from build.zig.zon's minimum_zig_version
+        # (the single source of truth for the pinned Zig version).
         uses: mlugg/setup-zig@v2
-        with:
-          # Pinned to the repo's minimum_zig_version (build.zig.zon). Keep in sync.
-          version: "0.16.0"
 
       - name: Run the acceptance gate (fmt + build + test)
         # Same gate as dorfl.json verify / ci.yml, so a tag build can't ship a

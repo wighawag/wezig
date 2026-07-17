@@ -7,10 +7,10 @@ name: ci
 #
 # The gate below IS `dorfl.json` `verify` verbatim (fmt check + build + test):
 # both call `zig` directly, so "green locally" and "green in CI" are the same
-# command. CI pins the Zig version with setup-zig; `build.zig` additionally
-# asserts the running Zig matches the pin (so any mismatched local toolchain
-# fails fast). Keep the pinned version in sync with build.zig.zon's
-# minimum_zig_version and build.zig's `pinned_zig`.
+# command. The Zig version lives in ONE place, `build.zig.zon`'s
+# `minimum_zig_version`: setup-zig with an empty `version` resolves it from there,
+# and `build.zig` asserts the running Zig matches it (so any drift — local or CI
+# — fails fast). Bump the version in `build.zig.zon` alone.
 #
 # A SECOND job (`webview`) runs the headless WebKitGTK/GTK4 shell proofs
 # (`shell-test`/`shell-bridge-test`/`shell-scheme-test`) under Xvfb. ADR-0007
@@ -36,9 +36,9 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Zig
+        # Empty version => resolved from build.zig.zon's minimum_zig_version
+        # (the single source of truth for the pinned Zig version).
         uses: mlugg/setup-zig@v2
-        with:
-          version: "0.16.0"
 
       - name: Run the dorfl.json verify gate (fmt + build + test)
         run: zig fmt --check . && zig build && zig build test
@@ -57,9 +57,8 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Zig
+        # Empty version => resolved from build.zig.zon's minimum_zig_version.
         uses: mlugg/setup-zig@v2
-        with:
-          version: "0.16.0"
 
       - name: Install the shell's system dependencies (WebKitGTK 6.0 / GTK4 + Xvfb)
         run: |

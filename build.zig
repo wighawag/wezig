@@ -1,18 +1,23 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-// The single Zig version this project builds with, as major.minor. It MUST stay
-// in sync with `build.zig.zon`'s `.minimum_zig_version` and the `version:` in
-// the CI/release `setup-zig` steps (`.github/workflows/`). `minimum_zig_version`
-// is only a FLOOR (it rejects a too-OLD compiler); it does nothing about a
-// too-NEW one, and Zig's language/std/build API churn between minors means a
-// mismatched local compiler fails cryptically or passes against different
-// behaviour. `assertZigVersion` below closes that gap: it runs under whatever
-// `zig` the caller actually invoked and refuses any non-matching minor with an
-// actionable message. This is why dropping the `zvm`-pinned launcher from
-// `dorfl.json` is safe — the toolchain is now pinned by the build itself, not by
-// the launcher, so `zig build` is correct regardless of HOW zig got onto PATH.
-const pinned_zig = std.SemanticVersion{ .major = 0, .minor = 16, .patch = 0 };
+// The Zig version this project builds with lives in EXACTLY ONE place in the
+// tree: `build.zig.zon`'s `.minimum_zig_version`. We import the manifest at
+// comptime and parse that string, so `build.zig` holds NO second copy of the
+// number — change the pin in one file and both the manifest floor and the guard
+// below move together. (The CI/release `setup-zig` `version:` in
+// `.github/workflows/` is the only other mention; it provisions the toolchain
+// and is checked BY this guard at build time, so a drift there fails the build.)
+//
+// `minimum_zig_version` alone is only a FLOOR (it rejects a too-OLD compiler);
+// it does nothing about a too-NEW one, and Zig's language/std/build API churn
+// between minors means a mismatched local compiler fails cryptically or passes
+// against different behaviour. `assertZigVersion` below closes that gap: it runs
+// under whatever `zig` the caller actually invoked and refuses any non-matching
+// minor with an actionable message. This is why dropping the `zvm`-pinned
+// launcher from `dorfl.json` is safe — the toolchain is pinned by the build
+// itself, so `zig build` is correct regardless of HOW zig got onto PATH.
+const pinned_zig = std.SemanticVersion.parse(@import("build.zig.zon").minimum_zig_version) catch unreachable;
 
 /// Fail fast if the running Zig's major.minor differs from `pinned_zig`. Patch
 /// differences are allowed (0.16.x is fine); a different minor (0.15/0.17) or
