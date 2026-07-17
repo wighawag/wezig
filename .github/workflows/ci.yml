@@ -67,6 +67,15 @@ jobs:
             pkg-config libwebkitgtk-6.0-dev xvfb xauth
 
       - name: Run the headless shell proofs under Xvfb (NOT in the core gate)
+        # GitHub runners have no real GPU and a restricted sandbox, so WebKitGTK's
+        # default DMABUF/GPU renderer and its bubblewrap sandbox crash the process
+        # (SIGTRAP / exit 133) even though the page never needs the GPU. Force the
+        # software path and disable the (unusable-in-CI) sandbox for these headless
+        # proofs. These env vars scope to this step only — the interactive
+        # `zig build shell` on a real desktop is untouched.
+        env:
+          WEBKIT_DISABLE_DMABUF_RENDERER: "1"
+          WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS: "1"
         run: |
           zig build shell-test
           zig build shell-bridge-test
