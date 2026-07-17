@@ -1,10 +1,45 @@
 const std = @import("std");
+const builtin = @import("builtin");
+
+// The single Zig version this project builds with, as major.minor. It MUST stay
+// in sync with `build.zig.zon`'s `.minimum_zig_version` and the `version:` in
+// the CI/release `setup-zig` steps (`.github/workflows/`). `minimum_zig_version`
+// is only a FLOOR (it rejects a too-OLD compiler); it does nothing about a
+// too-NEW one, and Zig's language/std/build API churn between minors means a
+// mismatched local compiler fails cryptically or passes against different
+// behaviour. `assertZigVersion` below closes that gap: it runs under whatever
+// `zig` the caller actually invoked and refuses any non-matching minor with an
+// actionable message. This is why dropping the `zvm`-pinned launcher from
+// `dorfl.json` is safe — the toolchain is now pinned by the build itself, not by
+// the launcher, so `zig build` is correct regardless of HOW zig got onto PATH.
+const pinned_zig = std.SemanticVersion{ .major = 0, .minor = 16, .patch = 0 };
+
+/// Fail fast if the running Zig's major.minor differs from `pinned_zig`. Patch
+/// differences are allowed (0.16.x is fine); a different minor (0.15/0.17) or
+/// major is rejected with the exact version to install.
+fn assertZigVersion() void {
+    const running = builtin.zig_version;
+    if (running.major != pinned_zig.major or running.minor != pinned_zig.minor) {
+        std.debug.print(
+            "\nwezig requires Zig {d}.{d}.x, but this is Zig {f}.\n" ++
+                "Install the pinned version (see build.zig.zon .minimum_zig_version)\n" ++
+                "and re-run. CI/release pin it via setup-zig; locally use any\n" ++
+                "install (a manager or a tarball) that puts Zig {d}.{d}.x on PATH.\n\n",
+            .{ pinned_zig.major, pinned_zig.minor, running, pinned_zig.major, pinned_zig.minor },
+        );
+        std.process.exit(1);
+    }
+}
 
 // Build graph for the project. v0 is a single library module (`wezig`) with a
 // test step; later tasks EXTEND this file additively (register their own
 // modules, and for paint link SDL3), so keep additions local and avoid
 // rewriting the shape below.
 pub fn build(b: *std.Build) void {
+    // Pin the toolchain at the build itself (see `pinned_zig` above): reject a
+    // mismatched local Zig before doing any work, with a clear message.
+    assertZigVersion();
+
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 

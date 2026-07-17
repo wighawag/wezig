@@ -1,5 +1,5 @@
 {
-	"verify": "zvm run 0.16.0 fmt --check . && zvm run 0.16.0 build && zvm run 0.16.0 build test",
+	"verify": "zig fmt --check . && zig build && zig build test",
 	"harness": "pi",
 	"autoBuild": false,
 	"autoTask": false,

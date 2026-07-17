@@ -5,11 +5,12 @@ name: ci
 # distinct from release.yml (tag-triggered build+publish via goreleaser):
 # CI = every push/PR gate; release = cut a versioned build. They do not share a job.
 #
-# The gate below mirrors `dorfl.json` `verify` (fmt check + build + test). The
-# local gate runs it via `zvm run 0.16.0 ...`; CI pins the same Zig version with
-# setup-zig and runs `zig ...` directly, so the STEPS are identical even though
-# the launcher differs. Keep the pinned version in sync with build.zig.zon's
-# minimum_zig_version.
+# The gate below IS `dorfl.json` `verify` verbatim (fmt check + build + test):
+# both call `zig` directly, so "green locally" and "green in CI" are the same
+# command. CI pins the Zig version with setup-zig; `build.zig` additionally
+# asserts the running Zig matches the pin (so any mismatched local toolchain
+# fails fast). Keep the pinned version in sync with build.zig.zon's
+# minimum_zig_version and build.zig's `pinned_zig`.
 #
 # A SECOND job (`webview`) runs the headless WebKitGTK/GTK4 shell proofs
 # (`shell-test`/`shell-bridge-test`/`shell-scheme-test`) under Xvfb. ADR-0007
