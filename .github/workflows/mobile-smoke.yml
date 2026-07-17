@@ -1,0 +1,85 @@
+name: mobile-smoke
+
+# A cheap PROOF-OF-CONCEPT leg for the explore-mobile-shell exploration: it does
+# NOT test wezig yet. It confirms the two things that whole exploration depends
+# on before we build tasks on them:
+#   1. GitHub's macOS runner really gives us a working Xcode + iOS Simulator
+#      (so iOS work needs no physical Mac), and Zig cross-compiles to
+#      aarch64-ios-simulator there.
+#   2. GitHub's Linux runner really cross-compiles wezig to Android (KVM-backed
+#      emulator acceleration is a separate, later concern).
+# Both are FREE + unlimited on this public repo. Manual/opt-in only (no push
+# trigger) so it never competes with the real `ci` gate; run it from the Actions
+# tab (workflow_dispatch) to sanity-check the mobile toolchain paths.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ios-simulator-and-zig:
+    # Apple Silicon macmini runner with Xcode + iOS Simulator preinstalled;
+    # free + unlimited on public repos. This IS our Mac.
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Xcode + available iOS runtimes/devices
+        run: |
+          xcodebuild -version
+          xcrun simctl list runtimes
+          xcrun simctl list devices available | head -40
+
+      - name: Boot an iPhone simulator headlessly (proves simctl works)
+        run: |
+          # Pick the first available iPhone device, create/boot it, confirm Booted.
+          UDID=$(xcrun simctl list devices available | grep -m1 "iPhone" | grep -oE "[0-9A-F-]{36}")
+          echo "Booting simulator $UDID"
+          xcrun simctl boot "$UDID"
+          # Wait for the device to reach Booted (simctl bootstatus blocks until ready).
+          xcrun simctl bootstatus "$UDID" -b
+          xcrun simctl list devices | grep "$UDID"
+          xcrun simctl shutdown "$UDID"
+
+      - name: Set up Zig
+        # Empty version => resolved from build.zig.zon's minimum_zig_version.
+        uses: mlugg/setup-zig@v2
+
+      - name: Cross-compile a trivial Zig lib to aarch64-ios-simulator
+        run: |
+          # A minimal C-ABI export, exactly the shape the iOS shell will link.
+          cat > /tmp/wezig_ios_smoke.zig <<'ZIG'
+          export fn wezig_smoke_add(a: c_int, b: c_int) c_int {
+              return a + b;
+          }
+          ZIG
+          zig build-lib /tmp/wezig_ios_smoke.zig \
+            -target aarch64-ios-simulator \
+            -femit-bin=/tmp/libwezig_ios_smoke.a
+          file /tmp/libwezig_ios_smoke.a
+          echo "iOS-simulator Zig static lib built OK."
+
+  android-crosscompile:
+    # Linux runner: prove Zig cross-compiles wezig's core to Android. (The
+    # KVM-accelerated emulator RUN is a later task; this only proves the build.)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+
+      - name: Cross-compile the wezig library (pure-Zig) to Android targets
+        run: |
+          # The pure-Zig library cross-compiles with no NDK. (The stb_truetype C
+          # dep additionally needs the Android/bionic sysroot from the NDK, which
+          # a later toolchain task installs; this smoke proves the Zig side.)
+          for tgt in aarch64-linux-android x86_64-linux-android; do
+            echo "=== $tgt ==="
+            zig build-obj src/root.zig -target "$tgt" -femit-bin="/tmp/root-$tgt.o"
+            file "/tmp/root-$tgt.o"
+          done
+          echo "Android Zig cross-compile OK for both ABIs."
