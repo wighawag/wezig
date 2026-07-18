@@ -45,6 +45,7 @@ echo "== 2/5 swiftc =="
 xcrun --sdk iphonesimulator swiftc \
     -sdk "$SDK_PATH" \
     -target "${ARCH}-apple-ios${DEPLOY_TARGET}-simulator" \
+    -parse-as-library \
     -import-objc-header "$IOS_DIR/Sources/wezig_mobile.h" \
     -framework UIKit -framework WebKit \
     -L "$REPO_ROOT/zig-out/lib" -lwezig_mobile \
