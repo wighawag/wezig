@@ -215,6 +215,81 @@ pub fn build(b: *std.Build) void {
         step.dependOn(&run_v.step);
     }
 
+    // --- MOBILE static libraries (ADR-0008 split Toolkit; explore-mobile-shell) --
+    // On mobile the Zig core builds a STATIC LIBRARY (`libwezig_mobile.a`) that
+    // an OS-native shell hosts and calls through the C-ABI in `src/mobile_abi.zig`
+    // (iOS: Swift/Xcode over a bridging header; Android: a JNI shim over the NDK).
+    // These steps CROSS-COMPILE that lib for the mobile target triples; they are
+    // additive and OUT of the desktop `zig build`/`zig build test` gate (they take
+    // an explicit `-Dmobile-target=...`), so the desktop path is untouched. The
+    // native app packaging + on-device/simulator RUN lives in the per-platform CI
+    // legs (`.github/workflows/mobile-*.yml`), not here.
+    //
+    // Usage: `zig build ios-lib -Dmobile-target=aarch64-ios-simulator`
+    //        `zig build android-lib -Dmobile-target=aarch64-linux-android`
+    // The mobile target is a build option (not the host `-Dtarget`) so the desktop
+    // artifacts keep resolving from the host target with no cross-compile.
+    const mobile_target_str = b.option(
+        []const u8,
+        "mobile-target",
+        "Target triple for the mobile static lib steps (e.g. aarch64-ios-simulator)",
+    );
+    // The mobile C dependency (stb_truetype) needs the target platform's libc
+    // headers (`math.h` etc.), which Zig does NOT bundle for iOS/Android: they
+    // come from the platform SDK sysroot. `-Dmobile-sysroot=<path>` points the C
+    // compile at that sysroot's headers/libs:
+    //   iOS:     $(xcrun --sdk iphonesimulator --show-sdk-path)
+    //   Android: <NDK>/toolchains/llvm/prebuilt/<host>/sysroot
+    // Absent it, the pure-Zig code still cross-compiles, but the stb C dep fails
+    // on the missing libc headers — exactly the gap the toolchain tasks close.
+    const mobile_sysroot = b.option(
+        []const u8,
+        "mobile-sysroot",
+        "Platform SDK sysroot for the mobile static lib's C deps (iOS SDK path / Android NDK sysroot)",
+    );
+    const MobileLib = struct {
+        b: *std.Build,
+        optimize: std.builtin.OptimizeMode,
+        mobile_target_str: ?[]const u8,
+        mobile_sysroot: ?[]const u8,
+        fn make(self: @This(), step_name: []const u8, desc: []const u8, default_triple: []const u8) void {
+            const triple = self.mobile_target_str orelse default_triple;
+            const query = std.Target.Query.parse(.{ .arch_os_abi = triple }) catch |err| {
+                std.debug.panic("invalid -Dmobile-target '{s}': {s}", .{ triple, @errorName(err) });
+            };
+            const resolved = self.b.resolveTargetQuery(query);
+            // The mobile lib re-imports the library sources at the mobile target
+            // (NOT the desktop `mod`, which is resolved for the host). It links
+            // libc for stb_truetype and vendors stb, exactly like `mod`.
+            const lib_mod = self.b.createModule(.{
+                .root_source_file = self.b.path("src/root.zig"),
+                .target = resolved,
+                .optimize = self.optimize,
+            });
+            lib_mod.addIncludePath(self.b.path("src/vendor"));
+            lib_mod.addCSourceFile(.{ .file = self.b.path("src/vendor/stb_truetype_impl.c") });
+            lib_mod.link_libc = true;
+            // Point the C compile at the platform SDK's libc headers (math.h),
+            // which Zig does not bundle for iOS/Android. `<sysroot>/usr/include`
+            // is the iOS SDK layout; the Android NDK sysroot uses the same
+            // `usr/include` root, so one form covers both.
+            if (self.mobile_sysroot) |sysroot| {
+                lib_mod.addSystemIncludePath(.{ .cwd_relative = self.b.pathJoin(&.{ sysroot, "usr", "include" }) });
+            }
+            const lib = self.b.addLibrary(.{
+                .name = "wezig_mobile",
+                .root_module = lib_mod,
+                .linkage = .static,
+            });
+            const install = self.b.addInstallArtifact(lib, .{});
+            const step = self.b.step(step_name, desc);
+            step.dependOn(&install.step);
+        }
+    };
+    const mobile_lib = MobileLib{ .b = b, .optimize = optimize, .mobile_target_str = mobile_target_str, .mobile_sysroot = mobile_sysroot };
+    mobile_lib.make("ios-lib", "Cross-compile the wezig mobile static lib for iOS (-Dmobile-target, default aarch64-ios-simulator)", "aarch64-ios-simulator");
+    mobile_lib.make("android-lib", "Cross-compile the wezig mobile static lib for Android (-Dmobile-target, default aarch64-linux-android)", "aarch64-linux-android");
+
     // --- PROTOTYPE (throwaway, ADR-0004): a native X11 window with NO SDL ---
     // `zig build proto-x11` builds prototypes/x11_window.zig, which presents the
     // same `renderScene` Surface via Xlib, linking ONLY the OS's libX11. It is

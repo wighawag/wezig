@@ -1,0 +1,56 @@
+name: mobile-ios
+
+# The iOS toolchain leg (task ios-toolchain-crosslink, spec explore-mobile-shell
+# Q2/stories 1,2): prove the wezig Zig static lib cross-compiles to the iOS
+# simulator, links into a minimal WKWebView app, and LAUNCHES on an iOS 17
+# Simulator — all on a GitHub macos-14 runner (CI is the Mac; no physical Mac
+# needed). A DEDICATED leg, separate from the desktop `ci` gate and the
+# WebKitGTK `webview` leg (ADR-0007 discipline: mobile proofs are their own jobs).
+#
+# Runner ceiling: macos-14 ships Xcode 15.4 ⇒ iOS SDK caps at 17, so we build+run
+# against an iOS 17 SIMULATOR (deployment-target floor stays 16.0). Simulator
+# builds need NO code signing and NO Apple Developer account.
+#
+# Manual/opt-in (workflow_dispatch) plus a path-filtered push trigger so it runs
+# when the mobile iOS surface or the shared mobile ABI/build wiring changes, and
+# never competes with the core gate on unrelated pushes.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "mobile/ios/**"
+      - "src/mobile_abi.zig"
+      - "build.zig"
+      - ".github/workflows/mobile-ios.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  ios-simulator:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Show Xcode + available iOS runtimes
+        run: |
+          xcodebuild -version
+          xcrun simctl list runtimes
+
+      - name: Set up Zig
+        # Empty version => resolved from build.zig.zon's minimum_zig_version.
+        uses: mlugg/setup-zig@v2
+
+      - name: Cross-compile the wezig mobile lib for iOS device (compile-only proof)
+        # The device triple must COMPILE + link (even though we only RUN the
+        # simulator here); this proves aarch64-ios is a real target for the lib.
+        run: |
+          zig build ios-lib \
+            -Dmobile-target=aarch64-ios \
+            -Dmobile-sysroot="$(xcrun --sdk iphoneos --show-sdk-path)"
+          file zig-out/lib/libwezig_mobile.a
+
+      - name: Build + launch the iOS shell on an iOS 17 Simulator
+        run: mobile/ios/build-and-run.sh

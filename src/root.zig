@@ -57,6 +57,11 @@ pub const docs = @import("docs.zig");
 /// bindings, so both the content-backend and chrome-toolkit swaps stay cheap.
 pub const chrome_conformance = @import("chrome_conformance.zig");
 
+/// The C-ABI surface the mobile shells (iOS/Android) link against: a static lib
+/// the OS-native shell hosts. Proves Zig↔native linkage without dragging the
+/// WebKitGTK/GTK shell seams into the mobile build.
+pub const mobile_abi = @import("mobile_abi.zig");
+
 /// Trivial placeholder so `zig build test` has real behaviour to assert on.
 /// Replaced/extended by the first real subsystem task.
 pub fn add(a: i32, b: i32) i32 {
@@ -82,4 +87,5 @@ test {
     _ = renderer;
     _ = toolkit;
     _ = chrome;
+    _ = mobile_abi;
 }
