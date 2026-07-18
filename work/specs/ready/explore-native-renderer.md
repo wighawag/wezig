@@ -1,7 +1,6 @@
 ---
 title: Explore — the native renderer past v0 (pick the target, pin the libraries, spike the hard parts)
 slug: explore-native-renderer
-humanOnly: true
 taskedAfter: [browser]
 ---
 
