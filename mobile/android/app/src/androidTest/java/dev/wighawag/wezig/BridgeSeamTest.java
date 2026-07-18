@@ -41,11 +41,20 @@ public final class BridgeSeamTest {
     private static final String PING = "ping-from-page";
     private static final String PONG = "pong-from-native";
 
+    // The native `addJavascriptInterface` channel name. It MUST differ from the
+    // page-facing `window.wezig` object below: on Android addJavascriptInterface
+    // installs its object AT `window.<channel>`, so if the channel were `wezig`
+    // the INJECT script's `window.wezig = {...}` would OVERWRITE the native
+    // interface and `wezig.postMessage` would be undefined. Registering the
+    // native leg as `wezigNative` (distinct from the page object `window.wezig`)
+    // mirrors the desktop/iOS shape, where the native channel lives in a separate
+    // namespace (`window.webkit.messageHandlers.wezig`) from `window.wezig`.
+    private static final String CHANNEL = "wezigNative";
+
     // The page-world object the bridge injects: `ping` posts its argument over
-    // the native `wezig` interface (addJavascriptInterface name). Mirrors the
-    // desktop bridge injection, adapted to Android's interface object shape.
+    // the SEPARATE native `wezigNative` interface (not over itself).
     private static final String INJECT =
-        "window.wezig = { ping: function(v){ wezig.postMessage(v); } };";
+        "window.wezig = { ping: function(v){ wezigNative.postMessage(v); } };";
 
     // The page whose script drives the page->native leg. It must NOT assume
     // `window.wezig` exists at parse time: Android has no document-start
@@ -86,7 +95,7 @@ public final class BridgeSeamTest {
             ctrl[0] = controller;
 
             // The page->native + native->page legs, driven THROUGH the seam.
-            controller.setSeamBridgeObserver("wezig", (name, body) -> {
+            controller.setSeamBridgeObserver(CHANNEL, (name, body) -> {
                 if (!gotPing.get()) {
                     if (PING.equals(body)) {
                         gotPing.set(true);
