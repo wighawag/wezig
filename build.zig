@@ -228,9 +228,18 @@ pub fn build(b: *std.Build) void {
     // (`src/harfbuzz_spike.zig`) imports the `wezig` module for the seam types +
     // the v0 stb backend it compares against, vendors stb the same way `mod`
     // does (glyph-INDEX raster of HarfBuzz's shaped glyph IDs — no FreeType
-    // needed yet, see the module note), and links libc. The test is display-free
-    // (it paints into the offscreen surface, no window), so it belongs IN the
-    // `zig build test` gate — unlike the WebKitGTK shell proofs, which need Xvfb.
+    // needed yet, see the module note), and links libc.
+    //
+    // It is its OWN step (`zig build harfbuzz-shape-test`), NOT folded into the
+    // display-free `zig build test` gate. The discriminator the repo's
+    // convention uses is NOT display-freeness but "needs a provisioned SYSTEM
+    // dependency": HarfBuzz (like WebKitGTK, unlike vendored stb / from-source
+    // SDL3) is a system dep pkg-config must resolve, and the core `gate` job in
+    // `.github/workflows/ci.yml` runs `zig build test` on a bare ubuntu-latest
+    // with NO apt provisioning. Folding this into `test` would red that gate on
+    // CI (no `libharfbuzz-dev` there). So it gets a DEDICATED provisioned CI leg
+    // (the `harfbuzz` job in ci.yml, mirroring the `webview` job) — keeping the
+    // core gate fast, provision-free, and green (ADR-0007 discipline).
     const hb_spike_mod = b.createModule(.{
         .root_source_file = b.path("src/harfbuzz_spike.zig"),
         .target = target,
@@ -246,7 +255,7 @@ pub fn build(b: *std.Build) void {
     hb_spike_mod.linkSystemLibrary("harfbuzz", .{});
     const hb_spike_tests = b.addTest(.{ .root_module = hb_spike_mod });
     const run_hb_spike_tests = b.addRunArtifact(hb_spike_tests);
-    const hb_spike_step = b.step("harfbuzz-shape-test", "SPIKE: real HarfBuzz shaping behind the PaintBackend seam (display-free; in `test`)");
+    const hb_spike_step = b.step("harfbuzz-shape-test", "SPIKE: real HarfBuzz shaping behind the PaintBackend seam (needs libharfbuzz-dev; NOT in `test` — its own CI leg)");
     hb_spike_step.dependOn(&run_hb_spike_tests.step);
 
     // --- MOBILE static libraries (ADR-0008 split Toolkit; explore-mobile-shell) --
@@ -401,6 +410,10 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
-    // The HarfBuzz shaping spike is display-free, so it runs inside `test`.
-    test_step.dependOn(&run_hb_spike_tests.step);
+    // The HarfBuzz shaping spike is deliberately NOT folded into `test`: it needs
+    // the provisioned system library `libharfbuzz-dev`, which the bare CI `gate`
+    // job does not install. It runs in its own dedicated CI leg (`harfbuzz` job
+    // in .github/workflows/ci.yml) via `zig build harfbuzz-shape-test`, mirroring
+    // the WebKitGTK `webview` leg (ADR-0007: provisioned proofs stay off the core
+    // display-free gate).
 }

@@ -9,8 +9,14 @@
 //! that the seam can host real shaping. The v0 `stb_truetype` glyph-by-glyph
 //! path stays exactly where it is (`src/paint.zig`); this module lives beside
 //! it as a SECOND `PaintBackend` implementation and is exercised only by its
-//! own display-free test step (`zig build harfbuzz-shape-test`, folded into
-//! `zig build test`). It is deliberately NOT re-exported from `src/root.zig`,
+//! own test step (`zig build harfbuzz-shape-test`), which runs in a DEDICATED
+//! provisioned CI leg (the `harfbuzz` job in `.github/workflows/ci.yml`), NOT in
+//! the bare `zig build test` gate. Although the test is display-free, it needs
+//! HarfBuzz — a SYSTEM library pkg-config must resolve — and the repo's
+//! convention keeps every proof needing a provisioned system dep off the core
+//! gate (the WebKitGTK shell proofs live in a separate `webview` job for the
+//! same reason); the discriminator is "needs provisioning", not displayfulness.
+//! It is deliberately NOT re-exported from `src/root.zig`,
 //! so HarfBuzz never enters the desktop library `mod` or the mobile
 //! cross-compiles (which rebuild `root.zig` for their targets); see the
 //! "## Why a separate module + step" note below.

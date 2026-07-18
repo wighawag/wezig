@@ -80,3 +80,32 @@ jobs:
           zig build shell-test
           zig build shell-bridge-test
           zig build shell-scheme-test
+
+  # The HarfBuzz text-shaping spike (ADR-0007, spec explore-native-renderer):
+  # a DEDICATED leg, separate from the display-free `gate` above, for the SAME
+  # reason the `webview` leg is separate — it needs a provisioned SYSTEM library
+  # (HarfBuzz via pkg-config), which the bare `gate` job never installs. The
+  # discriminator is "needs provisioning", not display-freeness: this proof is
+  # display-free (it paints into an offscreen surface, no window/Xvfb), but
+  # HarfBuzz is a system dep just like WebKitGTK, so it stays off the core gate
+  # and green here. It builds the spike test (which links harfbuzz) and shapes
+  # one non-trivial string behind the `PaintBackend` seam, proving a rendering
+  # (a `liga` ligature) the v0 stb codepoint path cannot produce.
+  harfbuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Zig
+        # Empty version => resolved from build.zig.zon's minimum_zig_version.
+        uses: mlugg/setup-zig@v2
+
+      - name: Install the shaping spike's system dependency (HarfBuzz)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libharfbuzz-dev
+
+      - name: Run the HarfBuzz shaping spike (NOT in the core gate)
+        run: zig build harfbuzz-shape-test
