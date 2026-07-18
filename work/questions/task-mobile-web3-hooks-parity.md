@@ -1,0 +1,11 @@
+<!-- dorfl-sidecar: item=task:mobile-web3-hooks-parity type=task slug=mobile-web3-hooks-parity allAnswered=false -->
+
+## Q1
+
+**'task:mobile-web3-hooks-parity' was bounced — how should we proceed?**
+
+> rebase onto origin/main conflicted (aborted, never auto-resolved)
+
+<!-- q1 fields: id=q1 kind=stuck -->
+
+**Your answer** (write below this line):

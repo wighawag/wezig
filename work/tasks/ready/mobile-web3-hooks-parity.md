@@ -4,6 +4,7 @@ slug: mobile-web3-hooks-parity
 spec: explore-mobile-shell
 blockedBy: [android-renderer-backend-oneshot, ios-renderer-backend-oneshot]
 covers: [8, 9]
+needsAnswers: true
 ---
 
 ## What to build
