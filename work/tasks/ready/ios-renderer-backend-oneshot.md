@@ -4,6 +4,7 @@ slug: ios-renderer-backend-oneshot
 spec: explore-mobile-shell
 blockedBy: [mobile-toolkit-seam-split, ios-toolchain-crosslink]
 covers: [4]
+needsAnswers: true
 ---
 
 ## What to build
