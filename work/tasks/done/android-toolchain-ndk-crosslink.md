@@ -23,6 +23,20 @@ Scope (narrowest real case): a minimal Gradle project + JNI shim that loads the 
 - [ ] The pinned toolchain path (NDK version, ABIs, Zig target triples, the Gradle↔Zig↔JNI wiring) is written down (task done-record and/or the mobile ADR).
 - [ ] Tests/checks mirror the repo style where applicable; the desktop v0 gate (`zig build test`) is untouched and green.
 
+## Outcome (pinned toolchain — proven green in CI)
+
+Proven on the `mobile-android` CI leg (`.github/workflows/mobile-android.yml`, `ubuntu-latest`): the `wezig` Zig static lib — including its `stb_truetype` C dep — cross-links for both ABIs against the NDK sysroot, packages into a debug APK that carries `libwezigshell.so` for both ABIs (JNI shim statically linking the Zig core), and the APK is uploaded as an artifact.
+
+Pinned facts (also in `mobile/android/README.md`):
+
+- **NDK:** r26d (`26.3.11579264`); LLVM sysroot. Provisioned via `android-actions/setup-android` + `sdkmanager` in CI; user-local (no root) locally.
+- **Zig target triples:** `aarch64-linux-android.26`, `x86_64-linux-android.26` (`.26` = API-level floor).
+- **The C-libc gap + fix:** `stb_truetype` needs bionic's `<math.h>` (`<sysroot>/usr/include`) AND arch headers `<asm/*>` (`<sysroot>/usr/include/<triple>`). Wired via `zig build android-lib -Dmobile-sysroot=<sysroot> -Dmobile-sysroot-arch-include=<triple>` (added to `build.zig`).
+- **UBSan:** the vendored stb C source is compiled `-fno-sanitize=undefined` for mobile (the mobile SDKs don't ship the `__ubsan_handle_*` runtime for static linking).
+- **Export retention:** the mobile C-ABI (`src/mobile_abi.zig`) `export fn`s are force-kept via a `comptime { _ = mobile_abi; }` in `root.zig`, else a non-test lib build GCs them.
+- **Division of labour:** Zig owns the portable core (static `.a`); NDK/CMake links it into `libwezigshell.so` behind a JNI shim; Gradle owns packaging. AGP 8.5.2 / Gradle 8.7 / minSdk 26 / compileSdk 34; ABIs arm64-v8a + x86_64.
+- **Emulator RUN** is delegated to `mobile-verification-legs-ci` (KVM Linux runner); this task's floor — an installable APK — is met.
+
 ## Blocked by
 
 - None — can start immediately. (Independent of the Toolkit split; touches new mobile/ files, not the desktop shell.)

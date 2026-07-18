@@ -23,6 +23,20 @@ Scope (narrowest real case): a minimal Xcode/SwiftPM target that links the Zig s
 - [ ] No signing / no Apple Developer account is required (Simulator only); this is stated explicitly.
 - [ ] The desktop v0 gate is untouched; the new iOS CI job is a DEDICATED leg (not folded into `zig build test`), mirroring how the webview proofs are kept separate.
 
+## Outcome (pinned toolchain — proven green in CI)
+
+Proven on the `mobile-ios` CI leg (`.github/workflows/mobile-ios.yml`, `macos-14`): the `wezig` Zig static lib cross-compiles to `aarch64-ios-simulator` (and `aarch64-ios` device, compile-only) and links into a minimal Swift/WKWebView app that LAUNCHES on an iOS 17 Simulator via `xcrun simctl`; the launched app calls the Zig C-ABI (`wezig_abi_version`/`wezig_greeting`) and the greeting is asserted in the device log (`PASS: iOS shell launched and the Zig core is linked + callable`).
+
+Pinned facts (also in `mobile/ios/README.md`):
+
+- **CI is the Mac:** GitHub `macos-14` (Apple Silicon), Xcode 15.4. No physical Mac needed.
+- **Runner ceiling:** Xcode 15.4 ⇒ iOS SDK caps at 17, so build+run against an **iOS 17 Simulator** (`iPhoneSimulator17.5.sdk`). **Deployment-target floor: iOS 16.0.**
+- **Zig target triples:** `aarch64-ios-simulator` (exercised), `aarch64-ios` (device, compile-proven).
+- **No signing / no Apple Developer account** — Simulator only; device/store signing is a follow-on build spec.
+- **The C-libc gap + fix:** `stb_truetype` needs the iOS SDK's `<math.h>`; wired via `-Dmobile-sysroot=$(xcrun --sdk iphonesimulator --show-sdk-path)`.
+- **Link details:** `swiftc -parse-as-library` (so `@main` works in `main.swift`); `-Xlinker -force_load` the Zig archive (pull its C-ABI members); stb compiled `-fno-sanitize=undefined` (the iOS SDK lacks the UBSan runtime); mobile exports force-kept via `root.zig` `comptime`.
+- **Build shape:** a hand-assembled `.app` (swiftc + bundle layout + Info.plist) driven by `mobile/ios/build-and-run.sh` — one reproducible script, no committed `.xcodeproj` to drift.
+
 ## Blocked by
 
 - `mobile-toolkit-seam-split` (the iOS shell hosts the chrome-surface half of the split `Toolkit`; build on the settled seam shape, not the pre-split one).
