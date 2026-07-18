@@ -1,0 +1,148 @@
+name: mobile-verify
+
+# The DEDICATED mobile verification legs (task mobile-verification-legs-ci, spec
+# explore-mobile-shell Q6/story 10) — the mobile analogue of the desktop Xvfb
+# `shell-test`/`shell-bridge-test`/`shell-scheme-test` steps in `ci.yml`. Each leg
+# proves the mobile `Renderer` seam END-TO-END on a real webview WITHOUT a physical
+# device, asserting the SAME three things the desktop smoke does:
+#   1. navigate one real page THROUGH the pinned seam,
+#   2. a `.finished` `LifecycleEvent` reaches a seam subscriber,
+#   3. the view renders NON-BLANK (a snapshot with >1 distinct pixel).
+#
+#   - iOS  (`macos-14`): boots an iOS 17 Simulator headlessly via `xcrun simctl`,
+#     builds + installs the WKWebView proof app, and runs `renderer-proof.sh`.
+#   - Android (`ubuntu-latest`, KVM-accelerated): boots a headless x86_64 emulator
+#     (`-no-window`) via reactivecircus/android-emulator-runner, installs the APK
+#     via `adb`, and runs the instrumented `RendererSeamTest` over `android.webkit
+#     .WebView`.
+#
+# WHY A DEDICATED, OFF-THE-HOT-PATH WORKFLOW (spec Q6 / ADR-0007 discipline):
+#   - The core `zig build test` gate in `ci.yml` stays DEVICE-FREE — only the
+#     `Fake*` seam contracts run there; no simulator/emulator dependency leaks in.
+#   - These proofs are EXPENSIVE (iOS needs macOS runner minutes — free + unlimited
+#     on this public repo, but ~10× slower than Linux; the Android emulator boot is
+#     minutes of KVM warm-up), so they run NIGHTLY + ON-DEMAND, never per-PR/push.
+#     The path-filtered `mobile-ios`/`mobile-android` legs cover the fast BUILD
+#     proofs on the hot path; THIS workflow owns the RUN proofs.
+#
+# HOW TO RUN / READ:
+#   - On demand: Actions tab -> "mobile-verify" -> "Run workflow" (workflow_dispatch).
+#   - Nightly: the `schedule` cron below (03:17 UTC — an off-peak, non-round minute
+#     to avoid the top-of-hour scheduler stampede).
+#   - Read a run: `gh run list --workflow mobile-verify.yml` then
+#     `gh run view <id> --log` (the iOS/Android jobs print their PASS/FAIL lines).
+#
+# GROUND TRUTH (proven by the `mobile-smoke` PoC before tasking):
+#   - GitHub's Linux runners provide KVM, so the x86_64 Android emulator is
+#     hardware-accelerated in CI (it CANNOT run on the nested-virt-less Hetzner box
+#     — that is precisely why the emulator RUN proof lives in CI, not locally).
+#   - `macos-14` ships Xcode 15.4 + iOS 17 Simulator runtimes (SDK ceiling 17;
+#     deployment-target floor stays iOS 16.0). Simulator builds need NO signing.
+on:
+  workflow_dispatch:
+  schedule:
+    # Nightly at 03:17 UTC. NOT on push/PR — see the rationale above.
+    - cron: "17 3 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  # ---- iOS leg: WKWebView Renderer proof on an iOS 17 Simulator --------------
+  # The iOS twin of the desktop `zig build shell-test`. Drives ONE page through
+  # the pinned `Renderer` seam over a WKWebView and asserts navigate + a
+  # `.finished` lifecycle event reaching a seam subscriber + a non-blank
+  # `WKWebView.takeSnapshot`. macOS runner ONLY (the Simulator needs macOS + Xcode).
+  ios-simulator:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Show Xcode + available iOS runtimes
+        run: |
+          xcodebuild -version
+          xcrun simctl list runtimes
+
+      - name: Set up Zig
+        # Empty version => resolved from build.zig.zon's minimum_zig_version
+        # (the single source of truth for the pinned Zig version).
+        uses: mlugg/setup-zig@v2
+
+      - name: Drive one page through the Renderer seam on an iOS 17 Simulator
+        # Cross-compiles the Zig mobile lib for the simulator, builds the Swift
+        # WKWebView proof app, boots an iOS 17 Simulator via simctl, installs +
+        # launches it, and asserts the seam PASS line (navigate + finished +
+        # non-blank snapshot). Same script used locally on a Mac.
+        run: mobile/ios/renderer-proof.sh
+
+  # ---- Android leg: instrumented WebView proof on a KVM x86_64 emulator ------
+  # The Android twin of the desktop `zig build shell-test`. Boots a headless
+  # x86_64 emulator (KVM-accelerated), installs the APK, and runs the
+  # instrumented `RendererSeamTest`, which drives ONE page through the pinned
+  # seam (Java -> Zig `AndroidWebviewRenderer` -> android.webkit.WebView) and
+  # asserts navigate + a `.finished` seam event + a non-blank bitmap snapshot.
+  android-emulator:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Enable KVM (hardware-accelerated emulator on the Linux runner)
+        # GitHub's Linux runners expose /dev/kvm; the runner user must be in the
+        # kvm group for `-accel kvm`. Without this the emulator falls back to a
+        # (far slower, often flaky) software renderer.
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK + NDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install the pinned NDK
+        # Match build-zig-libs.sh + the mobile-android BUILD leg's NDK exactly so
+        # the staged Zig static lib links against the same bionic sysroot.
+        run: |
+          sdkmanager --install "ndk;26.3.11579264" "cmake;3.22.1"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/26.3.11579264" >> "$GITHUB_ENV"
+
+      - name: Set up Zig
+        # Empty version => resolved from build.zig.zon's minimum_zig_version.
+        uses: mlugg/setup-zig@v2
+
+      - name: Cross-compile the wezig Zig static libs for both ABIs (NDK sysroot)
+        run: mobile/android/build-zig-libs.sh
+
+      - name: Set up Gradle 8.7 (AGP 8.5-compatible)
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Assemble the debug APK + the instrumented-test APK
+        # Pre-build both APKs OUTSIDE the emulator step so the (slow) emulator is
+        # only alive for the install + test run, keeping its window minimal.
+        working-directory: mobile/android
+        run: gradle assembleDebug assembleDebugAndroidTest --no-daemon
+
+      - name: Boot a headless x86_64 emulator + run the instrumented seam proof
+        # A KVM-accelerated x86_64 emulator (API 26 floor, `-no-window`), then
+        # `gradle connectedDebugAndroidTest` installs both APKs via adb and runs
+        # RendererSeamTest (navigate + `.finished` seam event + non-blank bitmap).
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 26
+          arch: x86_64
+          target: default
+          force-avd-creation: false
+          emulator-options: -no-window -no-snapshot -no-audio -no-boot-anim -gpu swiftshader_indirect -accel on
+          disable-animations: true
+          working-directory: mobile/android
+          script: gradle connectedDebugAndroidTest --no-daemon

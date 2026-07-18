@@ -72,8 +72,8 @@ interface as the desktop `SystemWebviewRenderer` (WebKitGTK):
   the headless Zig tests + the full native link
   (`libwezigshell.so` = shim + Zig core links, all JNI symbols resolve). The
   real one-page proof (navigate + `.finished` seam event + non-blank bitmap) is
-  the instrumented `RendererSeamTest` run on an x86_64 emulator by
-  `mobile-verification-legs-ci`.
+  the instrumented `RendererSeamTest` run on a KVM-accelerated x86_64 emulator by
+  the dedicated `mobile-verify` workflow — see "Verification legs" below.
 
 ### FINDING — the thread contract (spec Q5, the KNOWN GAP)
 
@@ -111,6 +111,34 @@ queue); it is Android-specific and load-bearing for the web3-hooks task
   0=started/1=committed/2=finished/3=failed) kept in lock-step between
   `WezigWebViewController` and `android_renderer.zig`, decoupled from the seam
   enum's declaration order so the JNI boundary carries a fixed contract.
+
+## Verification legs (which workflow runs what, and when)
+
+Two distinct triggers, mirroring how the desktop keeps its fast gate separate
+from the expensive Xvfb `shell-*` proofs (spec Q6 / ADR-0007):
+
+- **`mobile-android` (`.github/workflows/mobile-android.yml`) — the fast BUILD
+  leg, on the hot path.** `workflow_dispatch` + a path-filtered `push`. Proves
+  the Zig→Android cross-link (both ABIs, NDK sysroot) and that it packages into
+  an installable APK containing `libwezigshell.so`. No emulator — cheap enough
+  for the hot path.
+- **`mobile-verify` (`.github/workflows/mobile-verify.yml`) — the dedicated RUN
+  leg, OFF the hot path.** `workflow_dispatch` + a nightly `schedule` (NOT
+  per-push). Its `android-emulator` job enables KVM, cross-compiles the Zig
+  libs, assembles the debug + androidTest APKs, then boots a headless
+  KVM-accelerated x86_64 emulator (API 26, `-no-window`) via
+  `reactivecircus/android-emulator-runner` and runs
+  `gradle connectedDebugAndroidTest` — the instrumented `RendererSeamTest`
+  (navigate + `.finished` seam event + non-blank bitmap). This is the Android
+  analogue of the desktop Xvfb `shell-test` leg. Read a run with
+  `gh run list --workflow mobile-verify.yml` → `gh run view <id> --log`.
+
+**Why the emulator RUN lives in CI, not locally:** GitHub's Linux runners expose
+`/dev/kvm`, so the x86_64 emulator is hardware-accelerated; the nested-virt-less
+Hetzner dev box cannot run it. That is exactly why the emulator RUN proof was
+delegated from `android-renderer-backend-oneshot` to this CI verification leg.
+The core `zig build test` gate stays device-free — no emulator dependency leaks
+into it.
 
 ## Layout
 

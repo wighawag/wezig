@@ -14,6 +14,12 @@ name: mobile-ios
 # Manual/opt-in (workflow_dispatch) plus a path-filtered push trigger so it runs
 # when the mobile iOS surface or the shared mobile ABI/build wiring changes, and
 # never competes with the core gate on unrelated pushes.
+#
+# SCOPE: this leg owns the fast BUILD proof (Zig->iOS cross-link + the WKWebView
+# app LAUNCHES) on the hot path. The RUN proof that drives one page through the
+# `Renderer` seam (navigate + `.finished` + non-blank snapshot) is EXPENSIVE and
+# lives in the dedicated, off-hot-path `mobile-verify` workflow (nightly +
+# on-demand), which runs `mobile/ios/renderer-proof.sh` — see mobile-verify.yml.
 on:
   workflow_dispatch:
   push:
@@ -56,27 +62,3 @@ jobs:
 
       - name: Build + launch the iOS shell on an iOS 17 Simulator
         run: mobile/ios/build-and-run.sh
-
-  # The iOS Renderer-backend proof (task ios-renderer-backend-oneshot, spec
-  # explore-mobile-shell story 4): drive ONE real page THROUGH the pinned
-  # `Renderer` seam over a WKWebView and assert navigate + a `.finished`
-  # lifecycle event reaching a seam subscriber + a non-blank `WKWebView.
-  # takeSnapshot`. The iOS twin of the desktop `shell-test` webview leg; a
-  # DEDICATED leg kept OUT of `zig build test` (spec Q6 / ADR-0007 discipline).
-  ios-renderer-proof:
-    runs-on: macos-14
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Show Xcode + available iOS runtimes
-        run: |
-          xcodebuild -version
-          xcrun simctl list runtimes
-
-      - name: Set up Zig
-        # Empty version => resolved from build.zig.zon's minimum_zig_version.
-        uses: mlugg/setup-zig@v2
-
-      - name: Drive one page through the Renderer seam on an iOS 17 Simulator
-        run: mobile/ios/renderer-proof.sh

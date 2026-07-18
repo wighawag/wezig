@@ -49,8 +49,10 @@ pinned `Renderer` seam over a `WKWebView` — the iOS twin of the desktop
   Everything above the seam stays backend-agnostic.
 - The seam-CONTRACT tests (the backend maps a nav-delegate sequence to a
   `.finished` seam event, headless, no WKWebView) run in `zig build test`; the
-  REAL end-to-end proof runs on the `ios-renderer-proof` CI leg on a macos-14
-  iOS 17 Simulator (kept OUT of `zig build test`, per spec Q6 / ADR-0007).
+  REAL end-to-end proof runs on the dedicated `mobile-verify` workflow's
+  `ios-simulator` leg on a macos-14 iOS 17 Simulator (kept OUT of `zig build
+  test`, per spec Q6 / ADR-0007), which runs `renderer-proof.sh` NIGHTLY +
+  on-demand (NOT per-push — see "Verification legs" below).
 
 ## Layout
 
@@ -77,3 +79,24 @@ The `.app` is assembled by hand (swiftc + a bundle layout) rather than via a
 committed `.xcodeproj`, so the proof is a single reproducible script with no
 fragile project file to drift. This is the toolchain-proof shape; a real app
 target can adopt an Xcode project later.
+
+## Verification legs (which workflow runs what, and when)
+
+Two distinct triggers, mirroring how the desktop keeps its fast gate separate
+from the expensive Xvfb `shell-*` proofs (spec Q6 / ADR-0007):
+
+- **`mobile-ios` (`.github/workflows/mobile-ios.yml`) — the fast BUILD leg, on
+  the hot path.** `workflow_dispatch` + a path-filtered `push`. Proves the
+  Zig→iOS cross-link and that the WKWebView shell app LAUNCHES
+  (`build-and-run.sh`). Cheap enough to run whenever the mobile iOS surface
+  changes.
+- **`mobile-verify` (`.github/workflows/mobile-verify.yml`) — the dedicated RUN
+  leg, OFF the hot path.** `workflow_dispatch` + a nightly `schedule` (NOT
+  per-push). Its `ios-simulator` job runs `renderer-proof.sh`: boot an iOS 17
+  Simulator, install + launch the proof app, and assert the seam PASS line
+  (navigate + `.finished` + non-blank `takeSnapshot`). This is the iOS analogue
+  of the desktop Xvfb `shell-test` leg. Read a run with
+  `gh run list --workflow mobile-verify.yml` → `gh run view <id> --log`.
+
+The core `zig build test` gate stays device-free — no simulator dependency
+leaks into it; only the `Fake*`/seam-contract tests run there.
