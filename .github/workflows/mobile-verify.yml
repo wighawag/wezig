@@ -1,41 +1,50 @@
 name: mobile-verify
 
-# The DEDICATED mobile verification legs (task mobile-verification-legs-ci, spec
-# explore-mobile-shell Q6/story 10) — the mobile analogue of the desktop Xvfb
-# `shell-test`/`shell-bridge-test`/`shell-scheme-test` steps in `ci.yml`. Each leg
-# proves the mobile `Renderer` seam END-TO-END on a real webview WITHOUT a physical
-# device, asserting the SAME three things the desktop smoke does:
+# The DEDICATED mobile verification legs (spec build-mobile-shell, stories 7/11)
+# — the mobile analogue of the desktop Xvfb `shell-test`/`shell-bridge-test`/
+# `shell-scheme-test` steps in `ci.yml`. Each leg proves the mobile shell
+# END-TO-END on a real webview WITHOUT a physical device, against the REAL
+# maintained platform apps (NOT the exploration spike harnesses — task
+# mobile-verify-legs-real-app repointed them), asserting:
 #   1. navigate one real page THROUGH the pinned seam,
 #   2. a `.finished` `LifecycleEvent` reaches a seam subscriber,
-#   3. the view renders NON-BLANK (a snapshot with >1 distinct pixel).
+#   3. the view renders NON-BLANK (a snapshot with >1 distinct pixel),
+#   4. a background→foreground round-trip PRESERVES the current page (story 4).
 #
-#   - iOS  (`macos-14`): boots an iOS 17 Simulator headlessly via `xcrun simctl`,
-#     builds + installs the WKWebView proof app, and runs `renderer-proof.sh`.
-#   - Android (`ubuntu-latest`, KVM-accelerated): boots a headless x86_64 emulator
-#     (`-no-window`) via reactivecircus/android-emulator-runner, installs the APK
-#     via `adb`, and runs the instrumented `RendererSeamTest` over `android.webkit
-#     .WebView`.
+#   - iOS  (`macos-14`): builds + runs the REAL Xcode app
+#     (`mobile/ios/App/WezigShell.xcodeproj`) on an iOS 17 Simulator via
+#     `simctl`. The renderer RUN proof + the state-restoration assertion are the
+#     app's `--wezig-verify` self-check (`ios-shell`); the embedding + bridge +
+#     scheme SEAM proofs are folded into the app's XCTest target and run via
+#     `xcodebuild test` (`ios-seam-proofs`).
+#   - Android (`ubuntu-latest`, KVM-accelerated): builds + installs the REAL app
+#     module APK and runs its instrumented test target (`connectedDebugAndroidTest`),
+#     which drives ALL of them over `android.webkit.WebView`: `ShellSeamTest`
+#     (navigate + `.finished` + non-blank + state-restoration) plus the
+#     renderer / embedding / bridge / scheme `*SeamTest`/`*ProofTest`s — all
+#     against the real app module's controllers.
 #
-# WHY A DEDICATED, OFF-THE-HOT-PATH WORKFLOW (spec Q6 / ADR-0007 discipline):
+# WHY A DEDICATED, OFF-THE-HOT-PATH WORKFLOW (ADR-0007 discipline):
 #   - The core `zig build test` gate in `ci.yml` stays DEVICE-FREE — only the
-#     `Fake*` seam contracts run there; no simulator/emulator dependency leaks in.
-#   - These proofs are EXPENSIVE (iOS needs macOS runner minutes — free + unlimited
-#     on this public repo, but ~10× slower than Linux; the Android emulator boot is
-#     minutes of KVM warm-up), so they run NIGHTLY + ON-DEMAND, never per-PR/push.
-#     The path-filtered `mobile-ios`/`mobile-android` legs cover the fast BUILD
-#     proofs on the hot path; THIS workflow owns the RUN proofs.
+#     `Fake*`/seam-contract tests run there; no simulator/emulator dependency
+#     leaks in (ci.yml never references mobile).
+#   - These proofs are EXPENSIVE (iOS needs macOS runner minutes — free +
+#     unlimited on this public repo, but ~10× slower than Linux; the Android
+#     emulator boot is minutes of KVM warm-up), so they run NIGHTLY + ON-DEMAND,
+#     never per-PR/push. The path-filtered `mobile-ios`/`mobile-android` legs
+#     cover the fast BUILD proofs (building the REAL projects) on the hot path;
+#     THIS workflow owns the RUN proofs.
 #
 # HOW TO RUN / READ:
 #   - On demand: Actions tab -> "mobile-verify" -> "Run workflow" (workflow_dispatch).
 #   - Nightly: the `schedule` cron below (03:17 UTC — an off-peak, non-round minute
 #     to avoid the top-of-hour scheduler stampede).
 #   - Read a run: `gh run list --workflow mobile-verify.yml` then
-#     `gh run view <id> --log` (the iOS/Android jobs print their PASS/FAIL lines).
+#     `gh run view <id> --log` (each job prints its PASS/FAIL lines).
 #
-# GROUND TRUTH (proven by the `mobile-smoke` PoC before tasking):
+# GROUND TRUTH:
 #   - GitHub's Linux runners provide KVM, so the x86_64 Android emulator is
-#     hardware-accelerated in CI (it CANNOT run on the nested-virt-less Hetzner box
-#     — that is precisely why the emulator RUN proof lives in CI, not locally).
+#     hardware-accelerated in CI.
 #   - `macos-14` ships Xcode 15.4 + iOS 17 Simulator runtimes (SDK ceiling 17;
 #     deployment-target floor stays iOS 16.0). Simulator builds need NO signing.
 on:
@@ -48,42 +57,14 @@ permissions:
   contents: read
 
 jobs:
-  # ---- iOS leg: WKWebView Renderer proof on an iOS 17 Simulator --------------
-  # The iOS twin of the desktop `zig build shell-test`. Drives ONE page through
-  # the pinned `Renderer` seam over a WKWebView and asserts navigate + a
-  # `.finished` lifecycle event reaching a seam subscriber + a non-blank
-  # `WKWebView.takeSnapshot`. macOS runner ONLY (the Simulator needs macOS + Xcode).
-  ios-simulator:
-    runs-on: macos-14
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Show Xcode + available iOS runtimes
-        run: |
-          xcodebuild -version
-          xcrun simctl list runtimes
-
-      - name: Set up Zig
-        # Empty version => resolved from build.zig.zon's minimum_zig_version
-        # (the single source of truth for the pinned Zig version).
-        uses: mlugg/setup-zig@v2
-
-      - name: Drive one page through the Renderer seam on an iOS 17 Simulator
-        # Cross-compiles the Zig mobile lib for the simulator, builds the Swift
-        # WKWebView proof app, boots an iOS 17 Simulator via simctl, installs +
-        # launches it, and asserts the seam PASS line (navigate + finished +
-        # non-blank snapshot). Same script used locally on a Mac.
-        run: mobile/ios/renderer-proof.sh
-
-  # ---- iOS SHELL verify (task ios-shell-xcode-project, spec build-mobile-shell
-  # stories 4/7): drive the REAL Xcode app (mobile/ios/App/WezigShell.xcodeproj)
-  # on an iOS 17 Simulator and assert the mobile-verify facts AGAINST THE
-  # MAINTAINED APP (not the spike harness): navigate one page THROUGH the seams +
-  # a `.finished` lifecycle event reaching the chrome + a non-blank snapshot, PLUS
-  # the NEW story-4 assertion that a background→foreground round-trip preserves
-  # the page. The app self-checks under `--wezig-verify` (ShellVerify.swift),
-  # driving the SAME seams a user does.
+  # ---- iOS SHELL verify: the renderer RUN proof + state restoration, against
+  # the REAL app (spec build-mobile-shell stories 4/7). Drives the real Xcode app
+  # (mobile/ios/App/WezigShell.xcodeproj) on an iOS 17 Simulator and asserts the
+  # mobile-verify facts AGAINST THE MAINTAINED APP (not a spike harness):
+  # navigate one page THROUGH the seams + a `.finished` lifecycle event reaching
+  # the chrome + a non-blank snapshot, PLUS the story-4 assertion that a
+  # background→foreground round-trip preserves the page. The app self-checks
+  # under `--wezig-verify` (ShellVerify.swift), driving the SAME seams a user does.
   ios-shell:
     runs-on: macos-14
     steps:
@@ -96,17 +77,21 @@ jobs:
           xcrun simctl list runtimes
 
       - name: Set up Zig
+        # Empty version => resolved from build.zig.zon's minimum_zig_version.
         uses: mlugg/setup-zig@v2
 
       - name: Browse one page + survive background/foreground in the real app on an iOS 17 Simulator
         run: mobile/ios/shell-verify.sh
 
-  # ---- iOS ViewHandle-embedding proof (task mobile-viewhandle-embedding-proof,
-  # Q3/story 6): a mobile chrome-surface `embedView`s the renderer's WKWebView
-  # view (carried across the seam as the OPAQUE ViewHandle) and the page shows.
-  # Asserts a `.finished` seam event + a non-blank snapshot of the EMBEDDED
-  # container. Resolves ADR-0007's flagged cross-toolkit-embedding spike on iOS.
-  ios-embedding-proof:
+  # ---- iOS SEAM proofs: embedding + bridge + scheme, folded into the REAL app's
+  # XCTest target (spec build-mobile-shell stories 7/11; ADR-0009's Q3/story-6
+  # embedding + story-8 bridge + story-9 scheme seam-parity proofs). Runs
+  # `xcodebuild test` on the real WezigShell.xcodeproj (its "Build Zig static
+  # lib" phase builds the Zig core as a normal step), so the three seam proofs
+  # run through the MAINTAINED app, not the old hand-assembled `*-proof.sh`
+  # swiftc binaries (removed). The Android twin runs the same three as
+  # instrumented tests in the real app module (`android-emulator`).
+  ios-seam-proofs:
     runs-on: macos-14
     steps:
       - name: Checkout
@@ -120,15 +105,18 @@ jobs:
       - name: Set up Zig
         uses: mlugg/setup-zig@v2
 
-      - name: Embed the renderer view via ChromeSurface.embedView on an iOS 17 Simulator
-        run: mobile/ios/embedding-proof.sh
+      - name: Run the embedding + bridge + scheme seam proofs against the real app on an iOS 17 Simulator
+        run: mobile/ios/seam-proofs.sh
 
-  # ---- Android leg: instrumented WebView proof on a KVM x86_64 emulator ------
-  # The Android twin of the desktop `zig build shell-test`. Boots a headless
-  # x86_64 emulator (KVM-accelerated), installs the APK, and runs the
-  # instrumented `RendererSeamTest`, which drives ONE page through the pinned
-  # seam (Java -> Zig `AndroidWebviewRenderer` -> android.webkit.WebView) and
-  # asserts navigate + a `.finished` seam event + a non-blank bitmap snapshot.
+  # ---- Android leg: the REAL app module APK + its instrumented test target on a
+  # KVM x86_64 emulator. Builds + installs the REAL app module APK and runs
+  # `connectedDebugAndroidTest`, which runs the whole instrumented test target
+  # against the real controllers (Java -> Zig backends -> android.webkit.WebView):
+  # `ShellSeamTest` (navigate + `.finished` + non-blank + background→foreground
+  # state restoration) plus the renderer / embedding / bridge / scheme
+  # `*SeamTest`/`*ProofTest`s. No spike script — a plain `gradle
+  # connectedDebugAndroidTest` builds everything (the Zig lib is a normal Gradle
+  # `buildZigLibs` step).
   android-emulator:
     runs-on: ubuntu-latest
     steps:
@@ -166,7 +154,7 @@ jobs:
         # Empty version => resolved from build.zig.zon's minimum_zig_version.
         # The Gradle build cross-compiles the Zig static lib itself (the
         # `buildZigLibs` task the native build depends on), so no out-of-band
-        # build-zig-libs.sh run — Zig just needs to be on PATH.
+        # script — Zig just needs to be on PATH.
         uses: mlugg/setup-zig@v2
 
       - name: Set up Gradle 8.7 (AGP 8.5-compatible)
@@ -180,10 +168,10 @@ jobs:
         working-directory: mobile/android
         run: gradle assembleDebug assembleDebugAndroidTest --no-daemon
 
-      - name: Boot a headless x86_64 emulator + run the instrumented seam proof
+      - name: Boot a headless x86_64 emulator + run the instrumented shell + seam proofs
         # A KVM-accelerated x86_64 emulator (API 26 floor, `-no-window`), then
         # `gradle connectedDebugAndroidTest` installs both APKs via adb and runs
-        # RendererSeamTest (navigate + `.finished` seam event + non-blank bitmap).
+        # the whole instrumented test target against the REAL app module.
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 26
@@ -194,48 +182,3 @@ jobs:
           disable-animations: true
           working-directory: mobile/android
           script: gradle connectedDebugAndroidTest --no-daemon
-
-  # The iOS script-message BRIDGE proof (task mobile-web3-hooks-parity, spec
-  # explore-mobile-shell story 8): round-trip ONE message BOTH ways THROUGH the
-  # pinned `Renderer` seam over a WKWebView (WKUserContentController /
-  # WKScriptMessageHandler + evaluateJavaScript), mirroring the desktop
-  # `shell-bridge-test`. A DEDICATED leg kept OUT of `zig build test`.
-  ios-bridge-proof:
-    runs-on: macos-14
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Show Xcode + available iOS runtimes
-        run: |
-          xcodebuild -version
-          xcrun simctl list runtimes
-
-      - name: Set up Zig
-        uses: mlugg/setup-zig@v2
-
-      - name: Round-trip the script-message bridge through the seam on an iOS 17 Simulator
-        run: mobile/ios/bridge-proof.sh
-
-  # The iOS custom-SCHEME proof (task mobile-web3-hooks-parity, spec
-  # explore-mobile-shell story 9): serve ONE `wezig-test://hello` request from
-  # native THROUGH the pinned `Renderer` seam over a WKWebView (WKURLSchemeHandler
-  # registered on the config BEFORE the webview is created — the iOS ordering
-  # constraint), mirroring the desktop `shell-scheme-test`. A DEDICATED leg kept
-  # OUT of `zig build test`.
-  ios-scheme-proof:
-    runs-on: macos-14
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Show Xcode + available iOS runtimes
-        run: |
-          xcodebuild -version
-          xcrun simctl list runtimes
-
-      - name: Set up Zig
-        uses: mlugg/setup-zig@v2
-
-      - name: Serve one custom-scheme request through the seam on an iOS 17 Simulator
-        run: mobile/ios/scheme-proof.sh

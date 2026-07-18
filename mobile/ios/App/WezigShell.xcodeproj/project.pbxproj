@@ -11,6 +11,10 @@
 		A1000001000000000000F002 /* WKWebViewShellController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000002000000000000F002 /* WKWebViewShellController.swift */; };
 		A1000001000000000000F003 /* WKWebViewBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000002000000000000F003 /* WKWebViewBackend.swift */; };
 		A1000001000000000000F006 /* ShellVerify.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000002000000000000F006 /* ShellVerify.swift */; };
+		A1000001000000000000FT01 /* ProofTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000002000000000000FT01 /* ProofTestSupport.swift */; };
+		A1000001000000000000FT02 /* EmbeddingProofTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000002000000000000FT02 /* EmbeddingProofTests.swift */; };
+		A1000001000000000000FT03 /* BridgeProofTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000002000000000000FT03 /* BridgeProofTests.swift */; };
+		A1000001000000000000FT04 /* SchemeProofTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000002000000000000FT04 /* SchemeProofTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -21,10 +25,23 @@
 		A1000002000000000000F004 /* wezig_mobile.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = wezig_mobile.h; path = ../Sources/wezig_mobile.h; sourceTree = "<group>"; };
 		A1000002000000000000F005 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A1000002000000000000F0AP /* WezigShell.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = WezigShell.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A1000002000000000000FT01 /* ProofTestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProofTestSupport.swift; sourceTree = "<group>"; };
+		A1000002000000000000FT02 /* EmbeddingProofTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmbeddingProofTests.swift; sourceTree = "<group>"; };
+		A1000002000000000000FT03 /* BridgeProofTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeProofTests.swift; sourceTree = "<group>"; };
+		A1000002000000000000FT04 /* SchemeProofTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SchemeProofTests.swift; sourceTree = "<group>"; };
+		A1000002000000000000FT05 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A1000002000000000000FTAP /* WezigShellTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = WezigShellTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		A1000005000000000000F001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A1000005000000000000FT01 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -38,9 +55,22 @@
 			isa = PBXGroup;
 			children = (
 				A1000006000000000000F002 /* Sources */,
+				A1000006000000000000FT01 /* Tests */,
 				A1000002000000000000F005 /* Info.plist */,
 				A1000006000000000000F0PR /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		A1000006000000000000FT01 /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				A1000002000000000000FT01 /* ProofTestSupport.swift */,
+				A1000002000000000000FT02 /* EmbeddingProofTests.swift */,
+				A1000002000000000000FT03 /* BridgeProofTests.swift */,
+				A1000002000000000000FT04 /* SchemeProofTests.swift */,
+				A1000002000000000000FT05 /* Info.plist */,
+			);
+			path = Tests;
 			sourceTree = "<group>";
 		};
 		A1000006000000000000F002 /* Sources */ = {
@@ -59,6 +89,7 @@
 			isa = PBXGroup;
 			children = (
 				A1000002000000000000F0AP /* WezigShell.app */,
+				A1000002000000000000FTAP /* WezigShellTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -83,6 +114,23 @@
 			productReference = A1000002000000000000F0AP /* WezigShell.app */;
 			productType = "com.apple.product-type.application";
 		};
+		A1000007000000000000FT01 /* WezigShellTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A100000A000000000000FT01 /* Build configuration list for PBXNativeTarget "WezigShellTests" */;
+			buildPhases = (
+				A1000008000000000000FT01 /* Sources */,
+				A1000005000000000000FT01 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A100000E000000000000FT01 /* PBXTargetDependency */,
+			);
+			name = WezigShellTests;
+			productName = WezigShellTests;
+			productReference = A1000002000000000000FTAP /* WezigShellTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -95,6 +143,10 @@
 				TargetAttributes = {
 					A1000007000000000000F001 = {
 						CreatedOnToolsVersion = 15.4;
+					};
+					A1000007000000000000FT01 = {
+						CreatedOnToolsVersion = 15.4;
+						TestTargetID = A1000007000000000000F001;
 					};
 				};
 			};
@@ -112,6 +164,7 @@
 			projectRoot = "";
 			targets = (
 				A1000007000000000000F001 /* WezigShell */,
+				A1000007000000000000FT01 /* WezigShellTests */,
 			);
 		};
 /* End PBXProject section */
@@ -140,6 +193,17 @@
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		A1000008000000000000FT01 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A1000001000000000000FT01 /* ProofTestSupport.swift in Sources */,
+				A1000001000000000000FT02 /* EmbeddingProofTests.swift in Sources */,
+				A1000001000000000000FT03 /* BridgeProofTests.swift in Sources */,
+				A1000001000000000000FT04 /* SchemeProofTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		A1000008000000000000F001 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -152,6 +216,24 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		A100000E000000000000FT01 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A1000007000000000000F001 /* WezigShell */;
+			targetProxy = A100000F000000000000FT01 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin PBXContainerItemProxy section */
+		A100000F000000000000FT01 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A1000009000000000000F001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A1000007000000000000F001;
+			remoteInfo = WezigShell;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin XCBuildConfiguration section */
 		A100000C000000000000F001 /* Debug */ = {
@@ -261,6 +343,56 @@
 			};
 			name = Release;
 		};
+		A100000D000000000000FT01 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGN_IDENTITY = "";
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Tests/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.wighawag.wezig.shell.tests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_OBJC_BRIDGING_HEADER = "$(SRCROOT)/../Sources/wezig_mobile.h";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/WezigShell.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/WezigShell";
+			};
+			name = Debug;
+		};
+		A100000D000000000000FT02 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGN_IDENTITY = "";
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Tests/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.wighawag.wezig.shell.tests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_OBJC_BRIDGING_HEADER = "$(SRCROOT)/../Sources/wezig_mobile.h";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/WezigShell.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/WezigShell";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -269,6 +401,15 @@
 			buildConfigurations = (
 				A100000D000000000000F001 /* Debug */,
 				A100000D000000000000F002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A100000A000000000000FT01 /* Build configuration list for PBXNativeTarget "WezigShellTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A100000D000000000000FT01 /* Debug */,
+				A100000D000000000000FT02 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

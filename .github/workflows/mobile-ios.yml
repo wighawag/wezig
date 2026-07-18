@@ -15,11 +15,14 @@ name: mobile-ios
 # when the mobile iOS surface or the shared mobile ABI/build wiring changes, and
 # never competes with the core gate on unrelated pushes.
 #
-# SCOPE: this leg owns the fast BUILD proof (Zig->iOS cross-link + the WKWebView
-# app LAUNCHES) on the hot path. The RUN proof that drives one page through the
-# `Renderer` seam (navigate + `.finished` + non-blank snapshot) is EXPENSIVE and
-# lives in the dedicated, off-hot-path `mobile-verify` workflow (nightly +
-# on-demand), which runs `mobile/ios/renderer-proof.sh` — see mobile-verify.yml.
+# SCOPE: this leg owns the fast BUILD proof on the hot path — it builds the REAL
+# Xcode project (`mobile/ios/App/WezigShell.xcodeproj` via `build-and-run.sh`,
+# whose "Build Zig static lib" phase cross-compiles the Zig core as a normal
+# step) and asserts the WKWebView shell app LAUNCHES. The EXPENSIVE RUN proofs
+# (navigate + `.finished` + non-blank + state restoration, and the embedding /
+# bridge / scheme seam proofs) run against the same real app in the dedicated,
+# off-hot-path `mobile-verify` workflow (nightly + on-demand) — see
+# mobile-verify.yml.
 on:
   workflow_dispatch:
   push:

@@ -11,8 +11,8 @@ zig-pkg/
 mobile/android/app/.cxx-zig/
 mobile/android/app/src/main/cpp/wezig_mobile.h
 
-# iOS: the hand-assembled .app bundles the simulator build/run scripts produce
-# (build-and-run.sh / renderer-proof.sh); regenerated artifacts, not source.
+# iOS: the .app bundles + DerivedData the simulator build/run scripts produce
+# (build-and-run.sh / shell-verify.sh / seam-proofs.sh); regenerated artifacts,
+# not source.
 mobile/ios/build/
-mobile/ios/build-renderer-proof/
-mobile/ios/build-embedding-proof/
+mobile/ios/build-seam-proofs/
