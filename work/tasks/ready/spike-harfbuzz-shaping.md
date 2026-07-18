@@ -4,7 +4,6 @@ slug: spike-harfbuzz-shaping
 spec: explore-native-renderer
 blockedBy: []
 covers: [2, 6]
-needsAnswers: true
 ---
 
 ## What to build
