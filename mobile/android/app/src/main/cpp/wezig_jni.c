@@ -8,6 +8,7 @@
  * core is linked and callable from the Android process.
  */
 #include <jni.h>
+#include <stdio.h>
 #include <string.h>
 #include "wezig_mobile.h"
 
