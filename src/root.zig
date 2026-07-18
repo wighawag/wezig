@@ -36,6 +36,18 @@ pub const paint = @import("paint.zig");
 /// `SystemWebviewRenderer` (in the shell exe) implements it on WebKitGTK.
 pub const renderer = @import("renderer.zig");
 
+/// The `ScriptEngine` seam (ADR-0013): the JavaScript-runtime boundary. Pure
+/// interface (no bound engine), making the JS-engine choice REVERSIBLE the same
+/// way the `Renderer` seam is — a BOUND engine (SpiderMonkey/JSC/V8, lean
+/// SpiderMonkey) satisfies it first for compatibility, a Zig-native `kiesel` as
+/// an aspirational later swap-in behind the SAME seam. CAVEAT documented at the
+/// seam: unlike `Renderer`/`PaintBackend` this is a WIDE, DOM-coupled boundary
+/// (constant DOM/GC/event-loop callbacks), so it is intimate, not a thin vtable.
+/// Proven here with a trivial `StubScriptEngine` (no real engine bound — that is
+/// a follow-on build); its seam-contract tests run in the display-free
+/// `zig build test` gate.
+pub const script_engine = @import("script_engine.zig");
+
 /// The Android `Renderer` backend (ADR-0005/0006; spec `explore-mobile-shell`
 /// story 5): `AndroidWebviewRenderer` satisfies the pinned `Renderer` seam over
 /// `android.webkit.WebView`, bridging Zig↔Java over JNI. Pure Zig (no `jni.h`,
@@ -154,6 +166,7 @@ test {
     _ = docs;
     _ = chrome_conformance;
     _ = renderer;
+    _ = script_engine;
     _ = android_renderer;
     _ = toolkit;
     _ = chrome;
