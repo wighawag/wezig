@@ -56,21 +56,24 @@ public final class BridgeSeamTest {
     private static final String INJECT =
         "window.wezig = { ping: function(v){ wezigNative.postMessage(v); } };";
 
-    // The page whose script drives the page->native leg. It must NOT assume
-    // `window.wezig` exists at parse time: Android has no document-start
-    // user-script API, so the backend re-injects `injectUserScript` on the
-    // `.started` lifecycle event (Resolved decision 2), which lands slightly
-    // LATER than a true pre-load injection (spec build-mobile-shell, Resolved
-    // decision 2 Caveat; ADR-0009 §3). An inline script that pinged immediately
-    // would race that async re-injection and see `window.wezig` undefined. So the
-    // page RETRIES until the injected object is present, then pings — which still
-    // exercises the full page->native->page round-trip THROUGH the seam (this
-    // test's charter), just without depending on document-start ordering Android
-    // does not guarantee.
+    // The page whose script drives the page->native leg. It pings over
+    // `window.wezigNative` — the `addJavascriptInterface` object, which the
+    // WebView injects at document-start NATIVELY (reliably present, no async
+    // race). It deliberately does NOT depend on the injected `window.wezig`
+    // wrapper: Android has no document-start user-script API, so the backend
+    // re-injects `injectUserScript` on the `.started` lifecycle event (Resolved
+    // decision 2), which lands slightly LATER than a true pre-load injection
+    // (spec build-mobile-shell, Resolved decision 2 Caveat; ADR-0009 §3) and can
+    // race the page's own script under the emulator's timing. `injectUserScript`
+    // re-injection is proven separately (the headless seam-contract test + the
+    // desktop/iOS bridge legs); THIS test's charter is the page->native->page
+    // ROUND-TRIP through the real `addJavascriptInterface` seam channel, which
+    // `window.wezigNative` exercises directly. It still RETRIES defensively until
+    // the interface is present (belt-and-braces against a slow first frame).
     private static final String BRIDGE_PAGE =
         "data:text/html,"
         + "<body><script>"
-        + "function p(){if(window.wezig){window.wezig.ping('" + PING + "');}"
+        + "function p(){if(window.wezigNative){window.wezigNative.postMessage('" + PING + "');}"
         + "else{setTimeout(p,10);}}p();"
         + "</script></body>";
 
@@ -99,9 +102,11 @@ public final class BridgeSeamTest {
                 if (!gotPing.get()) {
                     if (PING.equals(body)) {
                         gotPing.set(true);
-                        // native->page reply: evaluate a call that re-posts pong
-                        // back through the SAME injected channel.
-                        controller.evaluateScript("window.wezig.ping('" + PONG + "');");
+                        // native->page reply: evaluate JS that re-posts pong back
+                        // through the SAME seam channel (native->page leg). Uses
+                        // window.wezigNative directly (reliably present), matching
+                        // the page's ping path.
+                        controller.evaluateScript("window.wezigNative.postMessage('" + PONG + "');");
                     }
                     return;
                 }

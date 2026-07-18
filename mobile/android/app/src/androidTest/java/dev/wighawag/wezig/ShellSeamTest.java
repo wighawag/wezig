@@ -118,6 +118,27 @@ public final class ShellSeamTest {
         // 4. Background→foreground round-trip: saveState then restore into a NEW
         // shell (as onSaveInstanceState/onCreate do). The restored shell's WebView
         // re-materialises the current page natively (host-only, ADR-0010).
+        //
+        // Wait until the TYPED page is the CURRENT entry in the WebView's
+        // back-forward list BEFORE saveState: `.finished` (onPageFinished) can
+        // fire slightly before the emulator commits the entry to history, and
+        // saveState persists the back-forward list — so saving too early captures
+        // START as current and the restore "loses" the typed page. Poll the
+        // back-forward list rather than sleeping a fixed amount.
+        final boolean[] typedIsCurrent = { false };
+        final long commitDeadline = System.currentTimeMillis() + 5000;
+        do {
+            instrumentation.runOnMainSync(() -> {
+                WebView wv = (WebView) shellHolder[0].contentContainer().getChildAt(0);
+                var cur = wv.copyBackForwardList().getCurrentItem();
+                typedIsCurrent[0] = cur != null && TYPED_PAGE.equals(cur.getUrl());
+            });
+            if (typedIsCurrent[0]) break;
+            Thread.sleep(100);
+        } while (System.currentTimeMillis() < commitDeadline);
+        assertTrue("typed page never became the current history entry before saveState",
+            typedIsCurrent[0]);
+
         final Bundle saved = new Bundle();
         instrumentation.runOnMainSync(() -> shellHolder[0].saveState(saved));
         assertFalse("saveState produced an empty bundle — no WebView state persisted",
@@ -138,13 +159,16 @@ public final class ShellSeamTest {
             ViewGroup container = restoredHolder[0].contentContainer();
             assertTrue("restored shell did not embed its WebView", container.getChildCount() >= 1);
         });
+        // Read the restored CURRENT entry from the back-forward list (more
+        // reliable than getUrl(), which can be null mid-restore).
         final String[] restoredUrl = new String[1];
         final long restoreDeadline = System.currentTimeMillis() + 8000;
         do {
             instrumentation.runOnMainSync(() -> {
                 ViewGroup container = restoredHolder[0].contentContainer();
                 WebView restoredView = (WebView) container.getChildAt(0);
-                restoredUrl[0] = restoredView.getUrl();
+                var cur = restoredView.copyBackForwardList().getCurrentItem();
+                restoredUrl[0] = cur != null ? cur.getUrl() : restoredView.getUrl();
             });
             if (TYPED_PAGE.equals(restoredUrl[0])) break;
             Thread.sleep(200);
