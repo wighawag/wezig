@@ -87,6 +87,15 @@ pub const ios_webview_renderer = @import("ios_webview_renderer.zig");
 /// (no UIKit / `jni.h`), so its seam-contract tests run in `zig build test`.
 pub const mobile_chrome_surface = @import("mobile_chrome_surface.zig");
 
+/// The shared mobile chrome loop (ADR-0008; spec `build-mobile-shell`, stories
+/// 3/5/11): `MobileChrome` is the mobile analogue of `chrome.zig` over the
+/// `ChromeSurface` half of the split `Toolkit` — it drives a `Renderer` and
+/// reflects its lifecycle events into a `ChromeSurface`'s widgets, with NO
+/// `HostLoop` (the OS owns the run loop on mobile). The ONE shared chrome piece
+/// both platform shells consume; pure Zig (no webview / native-UI binding), so
+/// its seam-contract tests run in the display-free `zig build test` gate.
+pub const mobile_chrome = @import("mobile_chrome.zig");
+
 // Force the mobile C-ABI `export fn`s to be ANALYSED (and thus emitted) in a
 // NON-test build. Without this, `mobile_abi` is only referenced from the test
 // block below, so a plain `zig build android-lib`/`ios-lib` would garbage-collect
@@ -128,4 +137,5 @@ test {
     _ = mobile_abi;
     _ = ios_webview_renderer;
     _ = mobile_chrome_surface;
+    _ = mobile_chrome;
 }
