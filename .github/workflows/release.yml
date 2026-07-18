@@ -7,16 +7,30 @@ name: release
 #   - goreleaser: the desktop Linux binaries (amd64, arm64) + docs archives +
 #     checksums + the conventional-commit changelog. It CREATES the release.
 #   - android-apk: the installable (unsigned debug) Android APK, sideloadable on
-#     a device/emulator.
-#   - ios-simulator-app: the iOS SIMULATOR .app (aarch64-ios-simulator), zipped.
-#     Runs in the iOS Simulator on a Mac (NOT a physical device — device/store
-#     builds need signing, which is out of scope). Clearly labelled as such.
+#     a device/emulator — built from the REAL Android app module
+#     (`mobile/android`, the maintained shell), NOT the exploration spike.
+#   - ios-simulator-app: the iOS SIMULATOR .app (aarch64-ios-simulator), zipped
+#     — built from the REAL Xcode project (`mobile/ios/App/WezigShell.xcodeproj`),
+#     NOT the exploration spike. Runs in the iOS Simulator on a Mac (NOT a
+#     physical device — device/store builds need signing, which is out of scope,
+#     Slice C `deliver-mobile-signing-and-store`). Clearly labelled as such.
 # The two mobile jobs run AFTER goreleaser (needs:) so the release exists to
 # upload into, and use `gh release upload` against the tag.
+#
+# DRY-RUN (`workflow_dispatch`): run this workflow from the Actions tab with NO
+# tag to verify the mobile artifacts build + package correctly WITHOUT publishing
+# a release. On a dispatch run goreleaser runs `--snapshot` (builds locally,
+# publishes nothing), and the two mobile jobs still build the REAL-app artifacts,
+# assert they are valid packages, and upload them as WORKFLOW artifacts (via
+# `actions/upload-artifact`, downloadable from the run) instead of attaching them
+# to a release. The tag path is byte-for-byte unchanged. Read a dispatch run with
+# `gh run list --workflow release.yml` -> `gh run view <id> --log`, and download
+# the packaged artifacts with `gh run download <id>`.
 on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -40,7 +54,10 @@ jobs:
         # red tree.
         run: zig fmt --check . && zig build && zig build test
 
-      - name: Run GoReleaser
+      - name: Run GoReleaser (release on a tag)
+        # The real release path: cut on a version tag, creates + publishes the
+        # GitHub Release. Byte-for-byte the same command a tag has always run.
+        if: startsWith(github.ref, 'refs/tags/')
         uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
@@ -49,10 +66,30 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # ---- Android APK: build the installable (unsigned debug) APK and attach it --
-  # The same Zig->NDK->Gradle path the mobile-android CI leg proves. Produces an
-  # UNSIGNED debug APK (sideloadable; a signed release APK needs a keystore,
-  # which is out of the exploration's scope). Renamed with the tag and uploaded.
+      - name: Run GoReleaser (snapshot on workflow_dispatch dry-run)
+        # A `workflow_dispatch` run has no tag, so goreleaser cannot cut a
+        # release. Build a `--snapshot` (local build, publishes nothing) so the
+        # desktop path stays exercised + green and the mobile jobs' `needs:`
+        # gate is satisfied without publishing anything.
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --snapshot --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ---- Android APK: build the REAL app module's installable (unsigned debug)
+  # APK and attach it --------------------------------------------------------
+  # Builds the REAL, maintained Android app module (`mobile/android`, the
+  # `WezigShell` shell — Activity + URL bar + back/forward over the seams), NOT
+  # the exploration spike. `gradle assembleDebug` cross-compiles the Zig static
+  # lib itself as a NORMAL Gradle step (the `buildZigLibs` task the native build
+  # depends on) and packages `libwezigshell.so` for both ABIs (arm64-v8a +
+  # x86_64) into an UNSIGNED debug APK (sideloadable; a signed release APK needs
+  # a keystore — Slice C `deliver-mobile-signing-and-store`, out of scope here).
+  # Renamed with the tag and uploaded.
   android-apk:
     needs: goreleaser
     runs-on: ubuntu-latest
@@ -75,9 +112,9 @@ jobs:
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/26.3.11579264" >> "$GITHUB_ENV"
 
       - name: Set up Zig
-        # The Gradle build cross-compiles the Zig static lib itself (the
-        # `buildZigLibs` task the native build depends on), so no out-of-band
-        # build-zig-libs.sh run — Zig just needs to be on PATH.
+        # The Gradle build cross-compiles the Zig static lib itself (the real
+        # app module's `buildZigLibs` task the native build depends on), so no
+        # out-of-band build-zig-libs.sh run — Zig just needs to be on PATH.
         uses: mlugg/setup-zig@v2
 
       - name: Set up Gradle 8.7
@@ -85,24 +122,51 @@ jobs:
         with:
           gradle-version: "8.7"
 
-      - name: Build the debug APK
+      - name: Build the real app module's debug APK
         working-directory: mobile/android
         run: gradle assembleDebug --no-daemon
 
-      - name: Upload the APK to the release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Package + validate the APK (unsigned debug, both ABIs)
+        # Name it with the tag (or the ref name on a dry-run) and confirm it is a
+        # valid package: it must carry `libwezigshell.so` (the Zig core, linked
+        # from the real app module) for BOTH floor ABIs. Mirrors the
+        # mobile-android.yml BUILD-leg check.
         run: |
           APK=$(find mobile/android/app/build/outputs/apk -name '*.apk' | head -1)
+          if [ -z "$APK" ]; then echo "FAIL: no APK produced"; exit 1; fi
           OUT="wezig_${GITHUB_REF_NAME}_android_debug_unsigned.apk"
           cp "$APK" "$OUT"
-          gh release upload "$GITHUB_REF_NAME" "$OUT" --clobber
+          unzip -l "$OUT" | grep -E 'lib/(arm64-v8a|x86_64)/libwezigshell.so' \
+            || { echo "FAIL: APK missing libwezigshell.so for both ABIs"; exit 1; }
+          echo "PASS: real-app APK is a valid package with libwezigshell.so (both ABIs)."
+          echo "APK_OUT=$OUT" >> "$GITHUB_ENV"
 
-  # ---- iOS Simulator app: build the .app, zip it, and attach it -------------
-  # The Zig->Swift WKWebView shell the mobile-ios CI leg proves, built for the
-  # iOS SIMULATOR (aarch64-ios-simulator). This runs in Xcode's iOS Simulator on
-  # a Mac; it is NOT a device/App-Store build (those need signing, out of scope).
-  # Zipped and uploaded, clearly labelled "ios-simulator".
+      - name: Attach the APK to the release (tag push)
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$GITHUB_REF_NAME" "$APK_OUT" --clobber
+
+      - name: Upload the APK as a workflow artifact (dry-run)
+        # No release exists on a `workflow_dispatch` run; publish the validated
+        # package as a downloadable workflow artifact instead so the dry-run
+        # proves a valid downloadable package end-to-end.
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: wezig-android-debug-apk
+          path: ${{ env.APK_OUT }}
+          if-no-files-found: error
+
+  # ---- iOS Simulator app: build the REAL app's .app, zip it, and attach it ---
+  # Builds the REAL, maintained Xcode project
+  # (`mobile/ios/App/WezigShell.xcodeproj`, the `WezigShell` shell), NOT the
+  # exploration spike. `build-and-run.sh` drives `xcodebuild` (whose "Build Zig
+  # static lib" phase cross-compiles the Zig core as a NORMAL build step) for the
+  # iOS SIMULATOR (aarch64-ios-simulator); `BUILD_ONLY=1` stops after the .app is
+  # assembled (skips the simulator boot/launch). This runs in Xcode's iOS
+  # Simulator on a Mac; it is NOT a device/App-Store build (those need signing —
+  # Slice C, out of scope). Zipped and uploaded, clearly labelled "ios-simulator".
   ios-simulator-app:
     needs: goreleaser
     runs-on: macos-14
@@ -113,17 +177,36 @@ jobs:
       - name: Set up Zig
         uses: mlugg/setup-zig@v2
 
-      - name: Build the iOS Simulator .app (build only, no launch)
-        # Reuse the proven build steps from build-and-run.sh, but stop after the
+      - name: Build the real app's iOS Simulator .app (build only, no launch)
+        # Drives the REAL Xcode project via build-and-run.sh, stopping after the
         # .app is assembled (BUILD_ONLY skips the simulator boot/launch).
         env:
           BUILD_ONLY: "1"
         run: mobile/ios/build-and-run.sh
 
-      - name: Zip + upload the Simulator app to the release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Package + validate the Simulator app zip
+        # Zip the built .app and confirm it is a valid package: the zip must
+        # contain the WezigShell.app bundle's Info.plist + the app binary.
         run: |
           OUT="wezig_${GITHUB_REF_NAME}_ios-simulator_app.zip"
           ( cd mobile/ios/build && ditto -c -k --sequesterRsrc --keepParent WezigShell.app "../../../$OUT" )
-          gh release upload "$GITHUB_REF_NAME" "$OUT" --clobber
+          unzip -l "$OUT" | grep -E 'WezigShell\.app/(Info\.plist|WezigShell)$' \
+            || { echo "FAIL: zip missing the WezigShell.app bundle contents"; exit 1; }
+          echo "PASS: real-app iOS Simulator .app zipped into a valid package."
+          echo "IOS_OUT=$OUT" >> "$GITHUB_ENV"
+
+      - name: Attach the Simulator app to the release (tag push)
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$GITHUB_REF_NAME" "$IOS_OUT" --clobber
+
+      - name: Upload the Simulator app as a workflow artifact (dry-run)
+        # No release exists on a `workflow_dispatch` run; publish the validated
+        # zip as a downloadable workflow artifact instead.
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: wezig-ios-simulator-app
+          path: ${{ env.IOS_OUT }}
+          if-no-files-found: error
