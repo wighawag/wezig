@@ -27,10 +27,17 @@ xcodebuild -version || true
 
 rm -rf "$BUILD_DIR"; mkdir -p "$BUILD_DIR"
 
-echo "== 1/4 xcodebuild (Zig-lib build phase + Swift) =="
+# Pin a SINGLE architecture (the runner's native arch) for BOTH the link and the
+# per-arch "Build Zig static lib" phase. Without ONLY_ACTIVE_ARCH + an explicit
+# ARCHS, `xcodebuild build` resolves ARCHS to every simulator arch (arm64+x86_64)
+# and links x86_64 while the script phase builds arm64 (CURRENT_ARCH=undefined_arch)
+# — an arch mismatch that fails the link with undefined _wezig_ios_shell_* symbols.
+HOST_ARCH="$(uname -m)"   # arm64 on the Apple-Silicon macos-14 runner
+echo "== 1/4 xcodebuild (Zig-lib build phase + Swift); arch: $HOST_ARCH =="
 xcodebuild \
   -project "$PROJECT" -scheme "$SCHEME" -configuration Debug \
   -sdk iphonesimulator -derivedDataPath "$DERIVED" \
+  ONLY_ACTIVE_ARCH=YES ARCHS="$HOST_ARCH" \
   CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
   build
 

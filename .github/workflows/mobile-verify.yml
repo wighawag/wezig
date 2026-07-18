@@ -172,11 +172,18 @@ jobs:
         # A KVM-accelerated x86_64 emulator (API 26 floor, `-no-window`), then
         # `gradle connectedDebugAndroidTest` installs both APKs via adb and runs
         # the whole instrumented test target against the REAL app module.
+        #
+        # target: google_apis (NOT default) is REQUIRED here: the `default`
+        # API-26 x86_64 system image ships NO WebView provider, so every test
+        # that touches `android.webkit.WebView` fails at load with
+        # `WebViewFactory$MissingWebViewPackageException: No WebView installed`.
+        # The google_apis image bundles a WebView implementation, which is
+        # exactly what these seam proofs exercise (Java -> Zig -> WebView).
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 26
           arch: x86_64
-          target: default
+          target: google_apis
           force-avd-creation: false
           emulator-options: -no-window -no-snapshot -no-audio -no-boot-anim -gpu swiftshader_indirect -accel on
           disable-animations: true
