@@ -37,17 +37,17 @@ static-page stub).
 
 ## Where it belongs / how it relates to the planned work
 
-- ADR-0005's intended swap is **progressive / automatic**, NOT a manual toggle:
-  "route what `WezigRenderer` handles well to it, fall back to the webview for
-  the rest." `explore-native-renderer` **open question #4** ("progressive-swap
-  policy … spike the routing mechanism on one trivial page") owns deciding how
-  the swap actually works.
-- This idea is the **manual-override / debug / demo** face of that same
-  mechanism: a way to force the swap and to SEE which engine rendered, useful
-  both as a dev tool while the native renderer matures and as a user-facing
-  "show me the native render" affordance. It should be fed IN as an input to
-  open question #4 (does the swap model want a manual override + an engine
-  indicator, alongside the automatic routing?), not built ahead of it.
+- **RESOLVED (2026-07-18): this idea IS the swap policy.** `explore-native-renderer`
+  decision #4 settled the progressive-swap question as **USER-CONTROLLED, with NO
+  automatic routing**: the webview is the default; the native renderer is used
+  only when the USER opts in — (a) a manual per-page trigger (THIS toggle) or
+  (b) a per-domain user allow-list. So this idea is no longer a secondary
+  "override" alongside automatic routing — it is the PRIMARY manual mechanism of
+  the swap policy, plus a visible engine indicator. (This matches ADR-0011's
+  "explicit, user-controlled trust boundaries" over implicit browser magic.)
+- Still gated on a second backend (`WezigRenderer` / a static-page stub)
+  existing; `explore-native-renderer` spikes the seam-level swap mechanism
+  (re-point the `Renderer` value + re-navigate) on the narrowest case.
 
 ## Smallest first step that would make it real (optional spike)
 
