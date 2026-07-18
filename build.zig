@@ -283,6 +283,18 @@ pub fn build(b: *std.Build) void {
                 .root_source_file = self.b.path("src/root.zig"),
                 .target = resolved,
                 .optimize = .ReleaseSafe,
+                // Strip debug info + the stack-trace/`SelfInfo` symbolication it
+                // pulls: even in ReleaseSafe, a panic path references
+                // `debug.writeCurrentStackTrace` -> `__dyld_get_image_header_...`
+                // (iOS) which the static mobile link cannot resolve. Stripping
+                // removes that machinery; a mobile core reports through the seam,
+                // not a host stack dump.
+                .strip = true,
+                // Disable the stack-probe helper (`__zig_probe_stack`) the NDK
+                // link does not provide; the mobile lib does not need guard-page
+                // stack probing.
+                .stack_check = false,
+                .stack_protector = false,
             });
             lib_mod.addIncludePath(self.b.path("src/vendor"));
             // Disable UBSan on the vendored C source for mobile: Zig's default
