@@ -127,6 +127,8 @@ void wezig_ios_embed_set_non_blank(void *ctx, bool non_blank);
  * rendered non-blank (the opaque handle carried the view across the seam and the
  * page showed). */
 bool wezig_ios_embed_proof_passed(void *ctx);
+
+/*
  * iOS web3-hook proof C-ABI (spec explore-mobile-shell stories 8,9; task
  * mobile-web3-hooks-parity). The iOS twins of the desktop shell-bridge-test /
  * shell-scheme-test, each driving ONE hook THROUGH the pinned `Renderer` seam
