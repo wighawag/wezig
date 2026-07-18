@@ -11,6 +11,11 @@ covers: [7, 11]
 Repoint the mobile verification CI legs from the spike scripts to the REAL platform apps, and add the new background→foreground state-restoration assertion, so a regression in the maintained shell is caught (not just in the spike harness).
 
 - **`mobile-verify.yml` (the nightly/on-demand RUN legs):** the iOS Simulator leg builds + runs the REAL Xcode/SwiftPM app (not `renderer-proof.sh`'s hand-assembled binary); the Android emulator leg builds + installs the REAL app module's APK and runs its instrumented test. Each keeps the existing assertions (navigate + a `.finished` lifecycle event reaching a seam subscriber + a non-blank snapshot) AND adds the state-restoration assertion: after a background→foreground round-trip, the current page/URL is unchanged (story 4's bar).
+
+  DISPOSITION of the current five iOS/Android jobs (`mobile-verify.yml` has `ios-simulator`, `ios-embedding-proof`, `ios-bridge-proof`, `ios-scheme-proof`, `android-emulator`):
+  - **`ios-simulator` + `android-emulator` — REPOINT** at the real apps and ADD the state-restoration assertion (the core renderer RUN proofs).
+  - **`ios-embedding-proof`, `ios-bridge-proof`, `ios-scheme-proof` — REPOINT to build against the real Xcode/SwiftPM project OR fold their assertions into the real app's test target**, so the embedding + two web3-hook seam proofs still run but through the maintained app, not the hand-assembled `*-proof.sh` binaries. Do NOT silently drop them — they are the ADR-0009 seam-parity proofs (embedding + bridge + scheme); if their assertions move into the real app's test target, delete the standalone proof jobs; if they stay separate jobs, they must build the real project. Decide per proof which is cleaner and record it in the done-record.
+  - Whichever way, NO seam proof (renderer / embedding / bridge / scheme) is lost — each still runs, just against the real app.
 - **The fast per-PR build legs (`mobile-ios.yml`/`mobile-android.yml`):** build the real projects (cross-link + launch/APK), replacing the spike-script build steps.
 - Keep the core `zig build test` gate device-free; the mobile RUN proofs stay OUT of it (ADR-0007 discipline).
 
@@ -20,7 +25,8 @@ Repoint the mobile verification CI legs from the spike scripts to the REAL platf
 - [ ] `mobile-verify.yml`'s Android leg builds + installs the REAL app module APK and runs the instrumented test asserting the same four things, green on a KVM x86_64 emulator.
 - [ ] The fast per-PR legs (`mobile-ios.yml`/`mobile-android.yml`) build the real projects (not the spike scripts) for their cross-link/launch/APK proofs.
 - [ ] The core `zig build test` gate stays device-free; the mobile RUN proofs remain OUT of it.
-- [ ] The spike proof scripts/harnesses that the real app + these legs supersede are removed or clearly reduced to what still has a purpose (no dead duplicate proof path left to rot).
+- [ ] Every seam proof (renderer, embedding, bridge, scheme) still runs — either as a repointed job building the real project or folded into the real app's test target; NONE is silently dropped, and the done-record states each proof's disposition (repointed job vs folded-in).
+- [ ] The spike proof scripts/harnesses (`renderer-proof.sh`, `bridge-proof.sh`, `scheme-proof.sh`, `embedding-proof.sh`, `build-and-run.sh` and their `Sources/*Proof.swift`) that the real app + these legs supersede are removed once their assertions run against the real app (no dead duplicate proof path left to rot).
 - [ ] CI legs are driven/verified via `gh workflow run` + `gh run view` (no physical device); the runs are green.
 
 ## Blocked by

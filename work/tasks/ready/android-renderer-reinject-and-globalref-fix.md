@@ -24,7 +24,7 @@ Two Zig-side fixes to the Android `Renderer` backend (`src/android_renderer.zig`
 
 ## Blocked by
 
-- None — can start immediately. It is Zig-only in `src/android_renderer.zig`, file-orthogonal to the shared chrome loop and both platform shells.
+- None — can start immediately. It is Zig-only in `src/android_renderer.zig`. It is file-orthogonal to the shared chrome loop and the platform-shell FILES; the `android-shell-app` task depends on it LOGICALLY (the shell must build on this corrected backend), not because of a shared-file conflict.
 
 ## Prompt
 

@@ -30,7 +30,7 @@ The Gradle project builds the Zig static lib as a normal Gradle task (not a besp
 ## Blocked by
 
 - `mobile-chrome-loop-zig` — hosts the shared chrome the Activity constructs.
-- `android-renderer-reinject-and-globalref-fix` — the Android backend's re-injection + ref-lifecycle fixes land first so the shell builds on the corrected backend (both touch `src/android_renderer.zig`, so serialized to avoid a conflict).
+- `android-renderer-reinject-and-globalref-fix` — a LOGICAL dependency: the shell must build on the corrected Android backend (fixed re-injection + one-ref-per-view), not the leaky spike backend. (This is NOT a file conflict: this task edits `mobile/android/**` while that task edits `src/android_renderer.zig`; the dependency is that the shell relies on the backend's fixed behaviour, so it is sequenced after.)
 
 ## Prompt
 
