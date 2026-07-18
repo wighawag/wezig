@@ -48,7 +48,7 @@ xcrun --sdk iphonesimulator swiftc \
     -parse-as-library \
     -import-objc-header "$IOS_DIR/Sources/wezig_mobile.h" \
     -framework UIKit -framework WebKit \
-    -L "$REPO_ROOT/zig-out/lib" -lwezig_mobile \
+    -Xlinker -force_load -Xlinker "$ZIG_LIB" \
     -o "$APP/WezigShell" \
     "$IOS_DIR/Sources/main.swift"
 
