@@ -53,8 +53,10 @@ jobs:
       - name: Cross-compile the wezig Zig static libs for both ABIs (NDK sysroot)
         run: mobile/android/build-zig-libs.sh
 
-      - name: Set up Gradle
+      - name: Set up Gradle 8.7 (AGP 8.5-compatible)
         uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
 
       - name: Build the debug APK (installable-APK floor)
         working-directory: mobile/android

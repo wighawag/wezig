@@ -62,6 +62,16 @@ pub const chrome_conformance = @import("chrome_conformance.zig");
 /// WebKitGTK/GTK shell seams into the mobile build.
 pub const mobile_abi = @import("mobile_abi.zig");
 
+// Force the mobile C-ABI `export fn`s to be ANALYSED (and thus emitted) in a
+// NON-test build. Without this, `mobile_abi` is only referenced from the test
+// block below, so a plain `zig build android-lib`/`ios-lib` would garbage-collect
+// the exports and the native shim would fail to link `_wezig_greeting` &c. This
+// comptime reference keeps them in the produced static archive. (The desktop
+// build harmlessly carries the same exports — they are tiny and unused there.)
+comptime {
+    _ = mobile_abi;
+}
+
 /// Trivial placeholder so `zig build test` has real behaviour to assert on.
 /// Replaced/extended by the first real subsystem task.
 pub fn add(a: i32, b: i32) i32 {

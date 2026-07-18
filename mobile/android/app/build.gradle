@@ -10,6 +10,8 @@ def zigStageDir = new File(projectDir, ".cxx-zig")
 android {
     namespace 'dev.wighawag.wezig'
     compileSdk 34
+    // Pin the NDK to match build-zig-libs.sh + the mobile-android CI leg.
+    ndkVersion '26.3.11579264'
 
     defaultConfig {
         applicationId "dev.wighawag.wezig"
@@ -26,10 +28,11 @@ android {
         externalNativeBuild {
             cmake {
                 arguments "-DANDROID_STL=none"
-                // Per-ABI dir holding libwezig_mobile.a. CMake reads
-                // ${WEZIG_ZIG_LIB_DIR} which we resolve per-abi below via a
-                // generator expression on ANDROID_ABI.
-                arguments "-DWEZIG_ZIG_LIB_DIR=${zigStageDir.absolutePath}/\${ANDROID_ABI}"
+                // Pass the staging BASE dir; CMakeLists appends /${ANDROID_ABI}
+                // itself (AGP does not macro-expand ANDROID_ABI in arguments).
+                arguments "-DWEZIG_ZIG_STAGE_DIR=${zigStageDir.absolutePath}"
+                // Pin the NDK version so it matches build-zig-libs.sh's sysroot.
+                arguments "-DANDROID_PLATFORM=android-26"
             }
         }
     }

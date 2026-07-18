@@ -8,15 +8,22 @@
 cmake_minimum_required(VERSION 3.22.1)
 project(wezigshell C)
 
-# WEZIG_ZIG_LIB_DIR is passed from Gradle (app/build.gradle) per ABI: it points
-# at the dir holding libwezig_mobile.a for ${ANDROID_ABI}.
-if(NOT DEFINED WEZIG_ZIG_LIB_DIR)
-    message(FATAL_ERROR "WEZIG_ZIG_LIB_DIR must be set (per-ABI Zig static lib dir)")
+# WEZIG_ZIG_STAGE_DIR is passed from Gradle (app/build.gradle) as the staging
+# BASE dir; the per-ABI lib lives at ${WEZIG_ZIG_STAGE_DIR}/${ANDROID_ABI}. We
+# resolve ANDROID_ABI HERE (CMake knows it per-ABI configure), NOT in the Gradle
+# argument — AGP does not macro-expand ${ANDROID_ABI} in cmake arguments.
+if(NOT DEFINED WEZIG_ZIG_STAGE_DIR)
+    message(FATAL_ERROR "WEZIG_ZIG_STAGE_DIR must be set (Zig static-lib staging base dir)")
+endif()
+
+set(WEZIG_ZIG_LIB "${WEZIG_ZIG_STAGE_DIR}/${ANDROID_ABI}/libwezig_mobile.a")
+if(NOT EXISTS "${WEZIG_ZIG_LIB}")
+    message(FATAL_ERROR "missing Zig static lib for ${ANDROID_ABI}: ${WEZIG_ZIG_LIB} (run build-zig-libs.sh first)")
 endif()
 
 add_library(wezig_mobile STATIC IMPORTED)
 set_target_properties(wezig_mobile PROPERTIES
-    IMPORTED_LOCATION "${WEZIG_ZIG_LIB_DIR}/libwezig_mobile.a")
+    IMPORTED_LOCATION "${WEZIG_ZIG_LIB}")
 
 add_library(wezigshell SHARED wezig_jni.c)
 target_include_directories(wezigshell PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
