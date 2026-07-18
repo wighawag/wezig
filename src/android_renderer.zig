@@ -178,6 +178,12 @@ pub const AndroidWebviewRenderer = struct {
 
     bridge: JavaBridge,
     cb: ?seam.LifecycleCallback = null,
+    /// The lifecycle callback subscribed BEFORE a C observer was installed on
+    /// THIS backend (e.g. the shell's `MobileChrome`). Stored PER-BACKEND so the
+    /// C observer FANS OUT to it (additive, not replacing — the single-sink seam
+    /// would otherwise silence the chrome) WITHOUT one backend's subscriber
+    /// leaking into another backend's events. Null when nothing subscribed first.
+    prior_lifecycle_cb: ?seam.LifecycleCallback = null,
     /// The single page->native script-message handler (script bridge, ADR-0005).
     msg_cb: ?seam.ScriptMessageCallback = null,
     /// The single custom-scheme handler (request interception, ADR-0005).
@@ -616,19 +622,20 @@ var c_observer: ?CLifecycleObserver = null;
 /// The lifecycle callback that was subscribed BEFORE the C observer was
 /// installed (e.g. the shell's `MobileChrome`, attached in
 /// `wezig_android_shell_start`). The seam is single-sink, so installing the C
-/// observer would otherwise SILENCE that subscriber. We capture it here and
-/// FAN OUT to it from `onCObserverEvent`, so a native observer (the instrumented
-/// `ShellSeamTest`) can watch the seam WITHOUT displacing the app's chrome — the
-/// URL field / nav buttons keep reflecting lifecycle events while the test also
-/// observes them. Null when nothing was subscribed first (the bare-controller
-/// proofs `RendererSeamTest`/`EmbeddingProofTest`, which have no chrome).
-var prior_lifecycle_cb: ?seam.LifecycleCallback = null;
-
+/// observer would otherwise SILENCE that subscriber. The pre-existing callback
+/// is captured PER-BACKEND (`AndroidWebviewRenderer.prior_lifecycle_cb`, NOT a
+/// module global) and fanned out to from `onCObserverEvent`, so a native
+/// observer (the instrumented `ShellSeamTest`) watches the seam WITHOUT
+/// displacing the app's chrome — and one backend's subscriber can never leak
+/// into another backend's events (which would cross-contaminate the shared
+/// instrumented-test process, e.g. a prior test's URL bleeding into the next).
 fn onCObserverEvent(ctx: *anyopaque, event: seam.LifecycleEvent) void {
-    _ = ctx;
+    // `ctx` is THIS backend (the C-observer sink is registered with `.ctx =
+    // backend`), so the pre-existing subscriber is read PER-BACKEND.
+    const self: *AndroidWebviewRenderer = @ptrCast(@alignCast(ctx));
     // Fan out to the pre-existing subscriber (the app's chrome) FIRST, so the
-    // C observer is ADDITIVE, not a replacement (see `prior_lifecycle_cb`).
-    if (prior_lifecycle_cb) |cb| cb.onEvent(cb.ctx, event);
+    // C observer is ADDITIVE, not a replacement.
+    if (self.prior_lifecycle_cb) |cb| cb.onEvent(cb.ctx, event);
     const obs = c_observer orelse return;
     switch (event) {
         .load_changed => |lc| {
@@ -670,7 +677,7 @@ export fn wezig_android_set_lifecycle_observer(handle: ?*anyopaque, observer: *c
     // seam). Do NOT capture our own multiplexing sink if the observer is being
     // re-installed (idempotent — avoids chaining onCObserverEvent to itself).
     if (backend.cb) |existing| {
-        if (existing.onEvent != onCObserverEvent) prior_lifecycle_cb = existing;
+        if (existing.onEvent != onCObserverEvent) backend.prior_lifecycle_cb = existing;
     }
     backend.renderer().setLifecycleCallback(.{ .ctx = backend, .onEvent = onCObserverEvent });
 }
@@ -1529,10 +1536,7 @@ test "C lifecycle observer receives the real seam .finished event" {
     var backend = AndroidWebviewRenderer.init(java.bridge());
     const observer = CLifecycleObserver{ .ctx = null, .onLoadState = CObs.onLoadState, .onTitle = CObs.onTitle };
     wezig_android_set_lifecycle_observer(&backend, &observer);
-    defer {
-        c_observer = null;
-        prior_lifecycle_cb = null;
-    }
+    defer c_observer = null;
 
     wezig_android_on_load_state(&backend, @intFromEnum(AndroidLoadEvent.page_started), "https://obs.example/");
     wezig_android_on_load_state(&backend, @intFromEnum(AndroidLoadEvent.page_finished), "https://obs.example/");
@@ -1589,10 +1593,7 @@ test "C lifecycle observer is ADDITIVE: it does not silence a pre-existing seam 
     // 2. The instrumented test installs a C observer to watch the seam.
     const observer = CLifecycleObserver{ .ctx = null, .onLoadState = CObs.onLoadState, .onTitle = CObs.onTitle };
     wezig_android_set_lifecycle_observer(&backend, &observer);
-    defer {
-        c_observer = null;
-        prior_lifecycle_cb = null;
-    }
+    defer c_observer = null;
 
     // 3. A load finishes: BOTH the chrome AND the C observer must see it.
     wezig_android_on_load_state(&backend, @intFromEnum(AndroidLoadEvent.page_finished), "https://shell.example/");
