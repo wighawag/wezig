@@ -66,7 +66,10 @@ if [ -z "$RUNTIME" ]; then
   exit 1
 fi
 echo "runtime: $RUNTIME"
-DEVTYPE="$(xcrun simctl list devicetypes | grep -m1 'iPhone 15' | grep -oE 'com.apple.CoreSimulator.SimDeviceType.iPhone-15[^ ]*' || echo com.apple.CoreSimulator.SimDeviceType.iPhone-SE-3rd-generation)"
+# Extract a concrete iPhone device type id, stripping any trailing punctuation
+# (`simctl list` prints it as `Name (com.apple...id)`).
+DEVTYPE="$(xcrun simctl list devicetypes | grep -m1 'iPhone 15 ' | grep -oE 'com\.apple\.CoreSimulator\.SimDeviceType\.[A-Za-z0-9-]+' | head -1)"
+[ -z "$DEVTYPE" ] && DEVTYPE="com.apple.CoreSimulator.SimDeviceType.iPhone-SE-3rd-generation"
 UDID="$(xcrun simctl create wezig-ios17 "$DEVTYPE" "$RUNTIME")"
 echo "device: $UDID"
 xcrun simctl boot "$UDID"
