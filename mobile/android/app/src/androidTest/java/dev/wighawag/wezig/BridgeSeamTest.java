@@ -47,10 +47,23 @@ public final class BridgeSeamTest {
     private static final String INJECT =
         "window.wezig = { ping: function(v){ wezig.postMessage(v); } };";
 
-    // The page whose inline script drives the page->native leg at load.
+    // The page whose script drives the page->native leg. It must NOT assume
+    // `window.wezig` exists at parse time: Android has no document-start
+    // user-script API, so the backend re-injects `injectUserScript` on the
+    // `.started` lifecycle event (Resolved decision 2), which lands slightly
+    // LATER than a true pre-load injection (spec build-mobile-shell, Resolved
+    // decision 2 Caveat; ADR-0009 §3). An inline script that pinged immediately
+    // would race that async re-injection and see `window.wezig` undefined. So the
+    // page RETRIES until the injected object is present, then pings — which still
+    // exercises the full page->native->page round-trip THROUGH the seam (this
+    // test's charter), just without depending on document-start ordering Android
+    // does not guarantee.
     private static final String BRIDGE_PAGE =
         "data:text/html,"
-        + "<body><script>window.wezig.ping('" + PING + "')</script></body>";
+        + "<body><script>"
+        + "function p(){if(window.wezig){window.wezig.ping('" + PING + "');}"
+        + "else{setTimeout(p,10);}}p();"
+        + "</script></body>";
 
     @Test
     public void bridgeRoundTripsBothWays() throws Exception {

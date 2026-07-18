@@ -124,16 +124,42 @@ public final class EmbeddingProofTest {
         assertTrue("expected a .finished event through the seam", sawFinished.get());
 
         // 3. the EMBEDDED view renders the page non-blank (the page is visible
-        // through the chrome-surface embed).
+        // through the chrome-surface embed). We draw the CONTAINER (not the child
+        // WebView directly) so the proof asserts the page shows THROUGH the embed.
+        //
+        // Two things must be forced by hand because this is an unattached view
+        // tree (no real window/ViewRootImpl to run traversals):
+        //   (a) the embedded CHILD must be measured + laid out — a manual
+        //       container.layout() does NOT propagate a measure/layout pass to
+        //       children, so a MATCH_PARENT child stays 0x0 and draws nothing
+        //       (unlike RendererSeamTest, which lays out its WebView directly);
+        //   (b) the WebView may not have painted its content into its layer at the
+        //       instant `.finished` fires under the emulator's software renderer,
+        //       so poll with a bounded retry rather than a single snapshot.
         final boolean[] nonBlank = new boolean[1];
-        instrumentation.runOnMainSync(() -> {
-            // Lay out the container (and its now-embedded child) at a real size.
-            containerHolder[0].measure(
-                View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY),
-                View.MeasureSpec.makeMeasureSpec(1920, View.MeasureSpec.EXACTLY));
-            containerHolder[0].layout(0, 0, 1080, 1920);
-            nonBlank[0] = isNonBlank(containerHolder[0]);
-        });
+        final long deadline = System.currentTimeMillis() + 3000; // bounded settle
+        do {
+            instrumentation.runOnMainSync(() -> {
+                ViewGroup container = containerHolder[0];
+                // (a) Lay out the container AND explicitly measure+layout its
+                // embedded child to the same real size, so the child has real
+                // bounds to paint into and dispatchDraw recurses into content.
+                container.measure(
+                    View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY),
+                    View.MeasureSpec.makeMeasureSpec(1920, View.MeasureSpec.EXACTLY));
+                container.layout(0, 0, 1080, 1920);
+                if (container.getChildCount() >= 1) {
+                    View child = container.getChildAt(0);
+                    child.measure(
+                        View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY),
+                        View.MeasureSpec.makeMeasureSpec(1920, View.MeasureSpec.EXACTLY));
+                    child.layout(0, 0, 1080, 1920);
+                }
+                nonBlank[0] = isNonBlank(container);
+            });
+            if (nonBlank[0]) break;
+            Thread.sleep(100); // (b) let the software renderer paint, then retry
+        } while (System.currentTimeMillis() < deadline);
         assertTrue("embedded container snapshot was blank — page did not render through embed",
             nonBlank[0]);
     }
