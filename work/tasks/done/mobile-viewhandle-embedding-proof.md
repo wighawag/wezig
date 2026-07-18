@@ -4,7 +4,6 @@ slug: mobile-viewhandle-embedding-proof
 spec: explore-mobile-shell
 blockedBy: [android-renderer-backend-oneshot, ios-renderer-backend-oneshot]
 covers: [6]
-needsAnswers: true
 ---
 
 ## What to build
