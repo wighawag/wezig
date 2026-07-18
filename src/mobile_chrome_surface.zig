@@ -175,6 +175,18 @@ fn onIosEmbedEvent(ctx: *anyopaque, event: seam.LifecycleEvent) void {
     }
 }
 
+/// Inert `WkPlatform` hook ops for the embedding proof, which does not exercise
+/// the web3 bridge/scheme hooks (those are proven by `mobile-web3-hooks-parity`).
+/// `WkPlatform` requires the fields; these are never invoked in this scenario.
+fn embedProofNoopScriptHandler(wk: *anyopaque, name: [*:0]const u8) callconv(.c) void {
+    _ = wk;
+    _ = name;
+}
+fn embedProofNoopRegisterScheme(wk: *anyopaque, scheme: [*:0]const u8) callconv(.c) void {
+    _ = wk;
+    _ = scheme;
+}
+
 /// Construct the iOS `Renderer` backend AND the mobile `ChromeSurface`, subscribe
 /// the proof sink, navigate `uri` THROUGH the renderer seam, and embed the
 /// renderer's opaque view THROUGH the chrome-surface seam
@@ -216,6 +228,11 @@ export fn wezig_ios_embed_proof_start(
             .setViewportSize = setViewportSize,
             .injectUserScript = injectUserScript,
             .evaluateScript = evaluateScript,
+            // The embedding proof exercises only navigation + embedding, not the
+            // web3 hooks (bridge/scheme, proven by `mobile-web3-hooks-parity`).
+            // `WkPlatform` requires the hook ops, so pass inert no-ops here.
+            .setScriptMessageHandler = embedProofNoopScriptHandler,
+            .registerScheme = embedProofNoopRegisterScheme,
         }),
         .surface = MobileChromeSurface.init(.{
             .host = embed_host,

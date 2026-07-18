@@ -54,6 +54,43 @@ pinned `Renderer` seam over a `WKWebView` — the iOS twin of the desktop
   test`, per spec Q6 / ADR-0007), which runs `renderer-proof.sh` NIGHTLY +
   on-demand (NOT per-push — see "Verification legs" below).
 
+## The two web3-hook proofs (task `mobile-web3-hooks-parity`, stories 8,9)
+
+Two further proofs drive the two web3-load-bearing `Renderer` hooks THROUGH the
+pinned seam over a `WKWebView`, the iOS twins of the desktop
+`shell-bridge-test` / `shell-scheme-test`:
+
+- **script-message bridge (story 8)** — `Sources/BridgeProof.swift`: injects
+  `window.wezig.ping` via a `WKUserScript` on the `WKUserContentController`,
+  registers the `wezig` channel via a `WKScriptMessageHandler`, loads a page that
+  posts `ping-from-page` (page->native leg), and native evaluates a reply that
+  re-posts `pong-from-native` (native->page leg). Both legs seen == PASS.
+  `WKScriptMessageHandler.didReceive` fires on the main queue, so — unlike
+  Android — no thread marshalling is needed. Driven by `bridge-proof.sh`
+  (`ios-bridge-proof` CI leg).
+- **custom-scheme interception (story 9)** — `Sources/SchemeProof.swift`:
+  registers `wezig-test://` via a `WKURLSchemeHandler` on the
+  `WKWebViewConfiguration` **BEFORE the `WKWebView` is created** (the iOS
+  ordering constraint — see the finding below), navigates `wezig-test://hello`,
+  and serves a native body whose marker `<title>` reaching the seam proves it
+  served AND rendered. Driven by `scheme-proof.sh` (`ios-scheme-proof` CI leg).
+
+The seam-CONTRACT portion of both hooks (the bridge round-trip + the scheme
+serve, reaching the ops table + re-entering the seam) runs headlessly in
+`zig build test` via the fake `WkPlatform`; the real end-to-end proofs are the
+two new `macos-14` CI legs, kept OUT of `zig build test` (spec Q6 / ADR-0007).
+
+### FINDING — the iOS scheme-registration ordering constraint
+
+A `WKURLSchemeHandler` MUST be set on the `WKWebViewConfiguration` BEFORE the
+`WKWebView` is created (the view copies its config at init; a handler added
+afterwards is ignored). This is the ONE ordering constraint the iOS scheme hook
+has that WebKitGTK and Android do not, surfaced at the seam in
+`src/ios_webview_renderer.zig`'s module doc and demonstrated explicitly in
+`SchemeProof.swift`. Recorded in
+`work/notes/findings/ios-wkurlschemehandler-registration-ordering-2026-07-18.md`
+and fed to `explore-web3-capabilities` + ADR-0005/0007 (relevant to `ipfs://`).
+
 ## Layout
 
 - `Sources/main.swift` — the toolchain shell app: a `UIApplicationDelegate` whose
@@ -74,6 +111,13 @@ pinned `Renderer` seam over a `WKWebView` — the iOS twin of the desktop
 - `renderer-proof.sh` — the Renderer-backend proof driver: same build shape, but
   launches `RendererProof.swift` and asserts the seam PASS line (navigate +
   finished + non-blank snapshot).
+- `Sources/BridgeProof.swift` + `bridge-proof.sh` — the script-message bridge
+  proof (story 8): the sole WKUserContentController/WKScriptMessageHandler
+  toucher, round-tripping `window.wezig.ping` both ways through the seam.
+- `Sources/SchemeProof.swift` + `scheme-proof.sh` — the custom-scheme proof
+  (story 9): the sole WKURLSchemeHandler toucher, serving `wezig-test://hello`
+  from native (handler registered on the config before the webview — the
+  ordering constraint).
 
 The `.app` is assembled by hand (swiftc + a bundle layout) rather than via a
 committed `.xcodeproj`, so the proof is a single reproducible script with no

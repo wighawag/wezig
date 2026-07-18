@@ -102,12 +102,9 @@ queue); it is Android-specific and load-bearing for the web3-hooks task
   to the shim): this is what lets the backend be driven by a FAKE bridge in
   `zig build test`, mirroring `FakeRenderer`. Alternative (direct extern) was
   rejected because it would force JNI into every headless test.
-- **The two web3 hooks are honest no-ops here.** `injectUserScript`/
-  `setScriptMessageHandler`/`evaluateScript`/`registerScheme` satisfy the pinned
-  VTable but do nothing; this task is the CONTENT-seam proof only. They are
-  wired (`addJavascriptInterface`/`evaluateJavascript` + `shouldInterceptRequest`)
-  by `mobile-web3-hooks-parity` (spec stories 8,9). Recorded so a reader is not
-  surprised the hooks are stubs.
+- **The two web3 hooks are wired by `mobile-web3-hooks-parity`** (spec stories
+  8,9) — see the section below. (They were honest no-ops after
+  `android-renderer-backend-oneshot`, which was the CONTENT-seam proof only.)
 - **Load-event codes are a stable JNI integer enum** (`AndroidLoadEvent`,
   0=started/1=committed/2=finished/3=failed) kept in lock-step between
   `WezigWebViewController` and `android_renderer.zig`, decoupled from the seam
@@ -195,6 +192,55 @@ cross-toolkit-embedding spike is resolved (confirmed, not refined). Recorded
 durably in
 `work/notes/findings/viewhandle-crosses-mobile-toolkit-boundary-2026-07-18.md`
 and fed back to the mobile ADR by `mobile-adr-and-build-plan`.
+## The two web3 hooks (spec stories 8,9) and their findings
+
+The two web3-load-bearing `Renderer` hooks now carry on the Android WebView
+through the SAME pinned seam as desktop (task `mobile-web3-hooks-parity`),
+mirroring the desktop `shell-bridge-test` / `shell-scheme-test`:
+
+- **script-message bridge** (`injectUserScript` / `setScriptMessageHandler` /
+  `evaluateScript`): `WezigWebViewController` installs an
+  `addJavascriptInterface` object under the channel name (opens
+  `window.<name>.postMessage`), and `evaluateJavascript` runs JS back into the
+  page. The page->native leg re-enters the Zig seam via
+  `wezig_android_on_script_message`; the native->page reply leg is
+  `evaluateScript`. Proven by the instrumented `BridgeSeamTest` (round-trip
+  `window.wezig.ping` both ways).
+- **custom-scheme interception** (`registerScheme`): `WebViewClient.shouldInterceptRequest`
+  serves each request for the registered scheme from native by up-calling the
+  Zig seam handler (`wezig_android_serve_scheme`) and wrapping the returned body
+  + content-type in a `WebResourceResponse`. Proven by the instrumented
+  `SchemeSeamTest` (serve `wezig-test://hello`, marker `<title>` renders).
+
+The headless seam-contract portion (both hooks reach the Java bridge + the
+page->native / scheme-serve legs re-enter the seam) runs in `zig build test`
+via the fake `JavaBridge` (mirroring `FakeRenderer`); the real emulator proof is
+the two instrumented tests run by `mobile-verification-legs-ci`.
+
+### FINDING — the two hooks have OPPOSITE thread contracts (spec Q5)
+
+`addJavascriptInterface.postMessage` fires on a private binder thread and IS
+marshalled onto the UI thread (a `Handler` post) before crossing the seam — same
+discipline as the load callbacks. But `shouldInterceptRequest` runs on a binder
+thread AND must answer **synchronously** on it (the WebView blocks that thread
+for the bytes), so it does NOT marshal — the scheme up-call
+(`wezig_android_serve_scheme` -> the seam `SchemeHandler`) is the ONE seam
+callback that legitimately runs off the UI thread and its handler must be
+thread-safe. Recorded in
+`work/notes/findings/android-custom-scheme-nonui-thread-and-opaque-origin-2026-07-18.md`.
+
+### FINDING — Android custom schemes are OPAQUE / insecure origins (matters for `ipfs://`)
+
+WebView (Chromium) treats a `shouldInterceptRequest`-served custom scheme as an
+opaque, NON-secure origin by default (`isSecureContext` false, no `crypto.subtle`,
+no service workers), with no public API to promote it (unlike WebKitGTK's
+`register_uri_scheme_as_secure`). So `ipfs://` content that needs a secure
+context / service worker is NOT backend-identical on Android — the mobile chrome
+must either serve it under a synthetic secure `https://` app-assets origin or
+accept a non-secure origin. This is the "scheme security traits at the seam"
+decision ADR-0007 deferred; recorded in
+`work/notes/findings/android-custom-scheme-nonui-thread-and-opaque-origin-2026-07-18.md`
+and fed to `explore-web3-capabilities` + ADR-0005/0007.
 
 ## Layout
 
@@ -215,6 +261,12 @@ and fed back to the mobile ADR by `mobile-adr-and-build-plan`.
 - `app/src/androidTest/java/.../RendererSeamTest.java` — the instrumented
   reference assertion (navigate + `.finished` seam event + non-blank snapshot),
   the mobile analogue of the desktop `shell-test`.
+- `app/src/androidTest/java/.../BridgeSeamTest.java` — the instrumented
+  script-message bridge assertion (round-trip `window.wezig.ping` both ways),
+  the mobile analogue of the desktop `shell-bridge-test` (spec story 8).
+- `app/src/androidTest/java/.../SchemeSeamTest.java` — the instrumented
+  custom-scheme assertion (serve `wezig-test://hello`, marker `<title>` renders),
+  the mobile analogue of the desktop `shell-scheme-test` (spec story 9).
 - `app/src/main/cpp/CMakeLists.txt` — links the prebuilt Zig static lib (per ABI)
   into `libwezigshell.so`.
 - `app/src/main/java/dev/wighawag/wezig/MainActivity.java` — loads the lib and

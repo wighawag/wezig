@@ -37,14 +37,37 @@ typedef struct {
     bool (*canGoForward)(void *ctx);
     void *(*view)(void *ctx);
     void (*setViewportSize)(void *ctx, int width, int height);
+    // The two web3 hooks (spec stories 8,9).
+    void (*injectUserScript)(void *ctx, const char *source);
+    void (*setScriptMessageHandler)(void *ctx, const char *name);
+    void (*evaluateScript)(void *ctx, const char *source);
+    void (*registerScheme)(void *ctx, const char *scheme);
 } WezigCJavaBridge;
 
-// A C lifecycle observer the seam calls back with `.load_changed` events (the
-// instrumented test subscribes THROUGH this, mirroring desktop shell-test).
+// A C lifecycle observer the seam calls back with `.load_changed` + `.title_changed`
+// events (the instrumented test subscribes THROUGH this, mirroring desktop
+// shell-test/shell-scheme-test). Field order MUST match android_renderer.zig's
+// `CLifecycleObserver`.
 typedef struct {
     void *ctx;
     void (*onLoadState)(void *ctx, int code, const char *uri);
+    void (*onTitle)(void *ctx, const char *title);
 } WezigCLifecycleObserver;
+
+// A C bridge (page->native) observer the seam calls back with each page post.
+typedef struct {
+    void *ctx;
+    void (*onMessage)(void *ctx, const char *name, const char *body);
+} WezigCScriptMessageObserver;
+
+// A C scheme observer: serves a request by writing the body/len/content-type
+// out-params and returning true, or false to decline. Runs on the binder thread.
+typedef struct {
+    void *ctx;
+    bool (*onRequest)(void *ctx, const char *uri,
+                      const char **out_body, size_t *out_body_len,
+                      const char **out_content_type);
+} WezigCSchemeObserver;
 
 extern void *wezig_android_renderer_init(const WezigCJavaBridge *bridge);
 extern void wezig_android_renderer_deinit(void *handle);
@@ -55,6 +78,18 @@ extern void wezig_android_on_load_state(void *handle, int code, const char *uri)
 extern void wezig_android_on_uri_changed(void *handle, const char *uri);
 extern void wezig_android_on_title_changed(void *handle, const char *title);
 extern void wezig_android_on_progress(void *handle, int percent);
+
+// The two web3 hooks (spec stories 8,9): seam down-calls + up-calls.
+extern void wezig_android_inject_user_script(void *handle, const char *source);
+extern void wezig_android_evaluate_script(void *handle, const char *source);
+extern void wezig_android_set_script_message_observer(
+    void *handle, const char *name, const WezigCScriptMessageObserver *observer);
+extern void wezig_android_on_script_message(void *handle, const char *name, const char *body);
+extern void wezig_android_register_scheme_observer(
+    void *handle, const char *scheme, const WezigCSchemeObserver *observer);
+extern bool wezig_android_serve_scheme(
+    void *handle, const char *uri,
+    const char **out_body, size_t *out_body_len, const char **out_content_type);
 
 // --- The Java-side context each bridge down-call needs ----------------------
 //
@@ -143,6 +178,33 @@ static void bridge_set_viewport(void *ctx, int width, int height) {
     (*env)->DeleteLocalRef(env, cls);
 }
 
+// --- the two web3 hooks: down-call impls (call the Java `do*` string methods) --
+
+static void call_string(JavaCtx *jc, const char *method, const char *arg) {
+    JNIEnv *env = attach_env(jc);
+    jclass cls = (*env)->GetObjectClass(env, jc->controller);
+    jmethodID mid = (*env)->GetMethodID(env, cls, method, "(Ljava/lang/String;)V");
+    if (mid) {
+        jstring jarg = (*env)->NewStringUTF(env, arg);
+        (*env)->CallVoidMethod(env, jc->controller, mid, jarg);
+        (*env)->DeleteLocalRef(env, jarg);
+    }
+    (*env)->DeleteLocalRef(env, cls);
+}
+
+static void bridge_inject_user_script(void *ctx, const char *source) {
+    call_string((JavaCtx *)ctx, "doInjectUserScript", source);
+}
+static void bridge_set_script_message_handler(void *ctx, const char *name) {
+    call_string((JavaCtx *)ctx, "doSetScriptMessageHandler", name);
+}
+static void bridge_evaluate_script(void *ctx, const char *source) {
+    call_string((JavaCtx *)ctx, "doEvaluateScript", source);
+}
+static void bridge_register_scheme(void *ctx, const char *scheme) {
+    call_string((JavaCtx *)ctx, "doRegisterScheme", scheme);
+}
+
 // --- Java -> Zig up-calls (nativeOn*) ---------------------------------------
 // `handle` is the Zig `*AndroidWebviewRenderer` returned by nativeCreate, boxed
 // as a jlong. Strings are converted to UTF-8 (freed after the forward); a null
@@ -168,6 +230,10 @@ Java_dev_wighawag_wezig_WezigWebViewController_nativeCreate(
         .canGoForward = bridge_can_go_forward,
         .view = bridge_view,
         .setViewportSize = bridge_set_viewport,
+        .injectUserScript = bridge_inject_user_script,
+        .setScriptMessageHandler = bridge_set_script_message_handler,
+        .evaluateScript = bridge_evaluate_script,
+        .registerScheme = bridge_register_scheme,
     };
     void *handle = wezig_android_renderer_init(&bridge);
     return (jlong)(intptr_t)handle;
@@ -193,6 +259,19 @@ static void observer_on_load_state(void *ctx, int code, const char *uri) {
     (*env)->DeleteLocalRef(env, cls);
 }
 
+static void observer_on_title(void *ctx, const char *title) {
+    JavaCtx *jc = (JavaCtx *)ctx;
+    JNIEnv *env = attach_env(jc);
+    jclass cls = (*env)->GetObjectClass(env, jc->controller);
+    jmethodID mid = (*env)->GetMethodID(env, cls, "onSeamTitle", "(Ljava/lang/String;)V");
+    if (mid) {
+        jstring jtitle = title ? (*env)->NewStringUTF(env, title) : NULL;
+        (*env)->CallVoidMethod(env, jc->controller, mid, jtitle);
+        if (jtitle) (*env)->DeleteLocalRef(env, jtitle);
+    }
+    (*env)->DeleteLocalRef(env, cls);
+}
+
 JNIEXPORT void JNICALL
 Java_dev_wighawag_wezig_WezigWebViewController_nativeSetLifecycleObserver(
     JNIEnv *env, jclass clazz, jlong handle, jobject observer) {
@@ -207,7 +286,11 @@ Java_dev_wighawag_wezig_WezigWebViewController_nativeSetLifecycleObserver(
     jc->controller = (*env)->NewGlobalRef(env, observer);
     g_observer_ctx = jc;
 
-    WezigCLifecycleObserver obs = { .ctx = jc, .onLoadState = observer_on_load_state };
+    WezigCLifecycleObserver obs = {
+        .ctx = jc,
+        .onLoadState = observer_on_load_state,
+        .onTitle = observer_on_title,
+    };
     wezig_android_set_lifecycle_observer((void *)(intptr_t)handle, &obs);
 }
 
@@ -262,4 +345,178 @@ Java_dev_wighawag_wezig_WezigWebViewController_nativeOnProgress(
     (void)env;
     (void)clazz;
     wezig_android_on_progress((void *)(intptr_t)handle, (int)percent);
+}
+
+// --- the two web3 hooks: seam down-calls + up-calls (spec stories 8,9) --------
+
+JNIEXPORT void JNICALL
+Java_dev_wighawag_wezig_WezigWebViewController_nativeInjectUserScript(
+    JNIEnv *env, jclass clazz, jlong handle, jstring source) {
+    (void)clazz;
+    const char *c = cstr_or_null(env, source);
+    if (c) wezig_android_inject_user_script((void *)(intptr_t)handle, c);
+    release_cstr(env, source, c);
+}
+
+JNIEXPORT void JNICALL
+Java_dev_wighawag_wezig_WezigWebViewController_nativeEvaluateScript(
+    JNIEnv *env, jclass clazz, jlong handle, jstring source) {
+    (void)clazz;
+    const char *c = cstr_or_null(env, source);
+    if (c) wezig_android_evaluate_script((void *)(intptr_t)handle, c);
+    release_cstr(env, source, c);
+}
+
+// The page->native bridge observer: forwards each seam message to the Java
+// controller's `onSeamScriptMessage(String,String)` (the instrumented test's
+// sink). One observer at a time (the seam channel is single today).
+static JavaCtx *g_msg_observer_ctx = NULL;
+
+static void bridge_observer_on_message(void *ctx, const char *name, const char *body) {
+    JavaCtx *jc = (JavaCtx *)ctx;
+    JNIEnv *env = attach_env(jc);
+    jclass cls = (*env)->GetObjectClass(env, jc->controller);
+    jmethodID mid = (*env)->GetMethodID(env, cls, "onSeamScriptMessage",
+                                        "(Ljava/lang/String;Ljava/lang/String;)V");
+    if (mid) {
+        jstring jname = name ? (*env)->NewStringUTF(env, name) : NULL;
+        jstring jbody = body ? (*env)->NewStringUTF(env, body) : NULL;
+        (*env)->CallVoidMethod(env, jc->controller, mid, jname, jbody);
+        if (jname) (*env)->DeleteLocalRef(env, jname);
+        if (jbody) (*env)->DeleteLocalRef(env, jbody);
+    }
+    (*env)->DeleteLocalRef(env, cls);
+}
+
+JNIEXPORT void JNICALL
+Java_dev_wighawag_wezig_WezigWebViewController_nativeSetScriptMessageObserver(
+    JNIEnv *env, jclass clazz, jlong handle, jstring channel, jobject observer) {
+    (void)clazz;
+    if (g_msg_observer_ctx) {
+        (*env)->DeleteGlobalRef(env, g_msg_observer_ctx->controller);
+        free(g_msg_observer_ctx);
+    }
+    JavaCtx *jc = (JavaCtx *)calloc(1, sizeof(JavaCtx));
+    if (!jc) return;
+    (*env)->GetJavaVM(env, &jc->vm);
+    jc->controller = (*env)->NewGlobalRef(env, observer);
+    g_msg_observer_ctx = jc;
+
+    const char *c = cstr_or_null(env, channel);
+    WezigCScriptMessageObserver obs = { .ctx = jc, .onMessage = bridge_observer_on_message };
+    wezig_android_set_script_message_observer((void *)(intptr_t)handle, c ? c : "", &obs);
+    release_cstr(env, channel, c);
+}
+
+JNIEXPORT void JNICALL
+Java_dev_wighawag_wezig_WezigWebViewController_nativeOnScriptMessage(
+    JNIEnv *env, jclass clazz, jlong handle, jstring name, jstring body) {
+    (void)clazz;
+    const char *cn = cstr_or_null(env, name);
+    const char *cb = cstr_or_null(env, body);
+    wezig_android_on_script_message((void *)(intptr_t)handle, cn, cb);
+    release_cstr(env, name, cn);
+    release_cstr(env, body, cb);
+}
+
+// The native scheme observer: serves each request by calling the Java
+// controller's `onSeamSchemeRequest(String)` -> a SchemeResponse, and copying
+// its body/content-type into the out-params. Runs on the BINDER thread (the
+// shouldInterceptRequest thread contract), so it attaches the current thread.
+// The copied strings are owned by this shim and freed on the NEXT serve (the
+// seam contract: borrowed until the handler is next called).
+static JavaCtx *g_scheme_observer_ctx = NULL;
+static char *g_scheme_body = NULL;
+static char *g_scheme_ct = NULL;
+
+static bool scheme_observer_on_request(void *ctx, const char *uri,
+                                       const char **out_body, size_t *out_body_len,
+                                       const char **out_content_type) {
+    JavaCtx *jc = (JavaCtx *)ctx;
+    JNIEnv *env = attach_env(jc);
+    jclass cls = (*env)->GetObjectClass(env, jc->controller);
+    jmethodID mid = (*env)->GetMethodID(
+        env, cls, "onSeamSchemeRequest",
+        "(Ljava/lang/String;)Ldev/wighawag/wezig/WezigWebViewController$SchemeResponse;");
+    bool served = false;
+    if (mid) {
+        jstring juri = uri ? (*env)->NewStringUTF(env, uri) : NULL;
+        jobject resp = (*env)->CallObjectMethod(env, jc->controller, mid, juri);
+        if (juri) (*env)->DeleteLocalRef(env, juri);
+        if (resp) {
+            jclass rcls = (*env)->GetObjectClass(env, resp);
+            jfieldID fbody = (*env)->GetFieldID(env, rcls, "body", "Ljava/lang/String;");
+            jfieldID fct = (*env)->GetFieldID(env, rcls, "contentType", "Ljava/lang/String;");
+            jstring jbody = (jstring)(*env)->GetObjectField(env, resp, fbody);
+            jstring jct = (jstring)(*env)->GetObjectField(env, resp, fct);
+            const char *body = cstr_or_null(env, jbody);
+            const char *ct = cstr_or_null(env, jct);
+            // Copy into shim-owned storage (freed on the next serve).
+            free(g_scheme_body);
+            free(g_scheme_ct);
+            g_scheme_body = body ? strdup(body) : strdup("");
+            g_scheme_ct = ct ? strdup(ct) : strdup("text/plain");
+            *out_body = g_scheme_body;
+            *out_body_len = strlen(g_scheme_body);
+            *out_content_type = g_scheme_ct;
+            served = true;
+            release_cstr(env, jbody, body);
+            release_cstr(env, jct, ct);
+            (*env)->DeleteLocalRef(env, rcls);
+            (*env)->DeleteLocalRef(env, jbody);
+            (*env)->DeleteLocalRef(env, jct);
+            (*env)->DeleteLocalRef(env, resp);
+        }
+    }
+    (*env)->DeleteLocalRef(env, cls);
+    return served;
+}
+
+JNIEXPORT void JNICALL
+Java_dev_wighawag_wezig_WezigWebViewController_nativeRegisterSchemeObserver(
+    JNIEnv *env, jclass clazz, jlong handle, jstring scheme, jobject observer) {
+    (void)clazz;
+    if (g_scheme_observer_ctx) {
+        (*env)->DeleteGlobalRef(env, g_scheme_observer_ctx->controller);
+        free(g_scheme_observer_ctx);
+    }
+    JavaCtx *jc = (JavaCtx *)calloc(1, sizeof(JavaCtx));
+    if (!jc) return;
+    (*env)->GetJavaVM(env, &jc->vm);
+    jc->controller = (*env)->NewGlobalRef(env, observer);
+    g_scheme_observer_ctx = jc;
+
+    const char *c = cstr_or_null(env, scheme);
+    WezigCSchemeObserver obs = { .ctx = jc, .onRequest = scheme_observer_on_request };
+    wezig_android_register_scheme_observer((void *)(intptr_t)handle, c ? c : "", &obs);
+    release_cstr(env, scheme, c);
+}
+
+JNIEXPORT jobject JNICALL
+Java_dev_wighawag_wezig_WezigWebViewController_nativeServeScheme(
+    JNIEnv *env, jclass clazz, jlong handle, jstring uri) {
+    (void)clazz;
+    const char *c = cstr_or_null(env, uri);
+    const char *body = NULL;
+    size_t body_len = 0;
+    const char *ct = NULL;
+    bool served = wezig_android_serve_scheme((void *)(intptr_t)handle, c, &body, &body_len, &ct);
+    release_cstr(env, uri, c);
+    if (!served) return NULL;
+
+    // Build a WezigWebViewController$SchemeResponse(body, contentType).
+    jclass rcls = (*env)->FindClass(env, "dev/wighawag/wezig/WezigWebViewController$SchemeResponse");
+    if (!rcls) return NULL;
+    jmethodID ctor = (*env)->GetMethodID(env, rcls, "<init>",
+                                         "(Ljava/lang/String;Ljava/lang/String;)V");
+    if (!ctor) return NULL;
+    // body is NUL-terminated (the seam's proof bodies are), so NewStringUTF is
+    // safe; a binary body would need a length-aware path (out of scope here).
+    jstring jbody = (*env)->NewStringUTF(env, body ? body : "");
+    jstring jct = (*env)->NewStringUTF(env, ct ? ct : "text/plain");
+    jobject resp = (*env)->NewObject(env, rcls, ctor, jbody, jct);
+    (*env)->DeleteLocalRef(env, jbody);
+    (*env)->DeleteLocalRef(env, jct);
+    (*env)->DeleteLocalRef(env, rcls);
+    return resp;
 }

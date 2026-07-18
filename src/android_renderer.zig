@@ -44,6 +44,38 @@
 //! lifecycle events serialized on one thread. (Finding recorded in the task
 //! done-record; see `mobile/android/README.md`.)
 //!
+//! ## The two web3 hooks (spec `explore-mobile-shell` stories 8,9; this task)
+//!
+//! Both web3-load-bearing hooks now carry through this backend, mirroring the
+//! desktop `SystemWebviewRenderer` (WebKitGTK) and the iOS backend:
+//!
+//!   - **script-message bridge:** `injectUserScript` runs a page-world script
+//!     (Android has no document-start user-script API, so the Java side injects
+//!     via `evaluateJavascript` / a load-time hook — see the finding below);
+//!     `setScriptMessageHandler` registers an `addJavascriptInterface` object so
+//!     `window.<name>.postMessage(v)` reaches native; `evaluateScript` runs JS
+//!     back into the page. The page->native leg re-enters Zig at
+//!     `wezig_android_on_script_message`.
+//!   - **custom-scheme interception:** `registerScheme` records a native scheme
+//!     handler; the Java `WebViewClient.shouldInterceptRequest` serves each
+//!     request for that scheme by up-calling `wezig_android_serve_scheme`.
+//!
+//! ## The thread contract for the hooks (spec Q5 — the KNOWN GAP, sharper here)
+//!
+//! `addJavascriptInterface` callbacks arrive on a private binder thread (the
+//! `JavaBridge` thread), and `shouldInterceptRequest` runs on a NON-UI (binder)
+//! thread too. The seam's callbacks are single-sink and expected serialized on
+//! the host thread. So the Java side MARSHALS the bridge post onto the UI thread
+//! before crossing into `wezig_android_on_script_message` (same discipline as
+//! the load callbacks). `shouldInterceptRequest`, however, must return its
+//! response SYNCHRONOUSLY on the binder thread (the WebView blocks that thread
+//! waiting for the bytes) — it CANNOT hop to the UI thread and wait. So the
+//! scheme up-call (`wezig_android_serve_scheme`) is the ONE seam callback that
+//! legitimately runs off the UI thread; the seam `SchemeHandler` it invokes must
+//! be thread-safe / not touch UI state. This is recorded as a finding
+//! (`work/notes/findings/android-custom-scheme-nonui-thread-and-opaque-origin-2026-07-18.md`)
+//! because it is load-bearing for `ipfs://`.
+//!
 //! The ONLY Android code that imports `android.webkit.*` is the Java
 //! `WezigWebViewController`; this Zig file and everything above the seam never
 //! do (the same discipline the desktop chrome keeps against `webkit_`/`gtk_`).
@@ -102,6 +134,20 @@ pub const JavaBridge = struct {
     /// Carried opaquely across the seam exactly like the desktop `GtkWidget`.
     view: *const fn (ctx: *anyopaque) seam.ViewHandle,
     setViewportSize: *const fn (ctx: *anyopaque, width: c_int, height: c_int) void,
+
+    // --- the two web3 hooks (ADR-0005; spec stories 8,9) ---
+    /// Run `source` in the page world (native->page setup leg of the bridge).
+    injectUserScript: *const fn (ctx: *anyopaque, source: [*:0]const u8) void,
+    /// Register the page->native channel `name` via `addJavascriptInterface`
+    /// (opens `window.<name>.postMessage`). The page's posts flow back to the
+    /// seam at `wezig_android_on_script_message`.
+    setScriptMessageHandler: *const fn (ctx: *anyopaque, name: [*:0]const u8) void,
+    /// Evaluate `source` as JS in the current page (native->page reply leg).
+    evaluateScript: *const fn (ctx: *anyopaque, source: [*:0]const u8) void,
+    /// Register the custom URI scheme `scheme`; the Java
+    /// `WebViewClient.shouldInterceptRequest` serves it from native by
+    /// up-calling `wezig_android_serve_scheme`.
+    registerScheme: *const fn (ctx: *anyopaque, scheme: [*:0]const u8) void,
 };
 
 /// A `Renderer` backed by one Java `android.webkit.WebView` reached over JNI.
@@ -111,6 +157,10 @@ pub const JavaBridge = struct {
 pub const AndroidWebviewRenderer = struct {
     bridge: JavaBridge,
     cb: ?seam.LifecycleCallback = null,
+    /// The single page->native script-message handler (script bridge, ADR-0005).
+    msg_cb: ?seam.ScriptMessageCallback = null,
+    /// The single custom-scheme handler (request interception, ADR-0005).
+    scheme_handler: ?seam.SchemeHandler = null,
 
     pub fn init(bridge: JavaBridge) AndroidWebviewRenderer {
         return .{ .bridge = bridge };
@@ -225,31 +275,53 @@ pub const AndroidWebviewRenderer = struct {
         self.emit(.{ .progress_changed = @as(f64, @floatFromInt(clamped)) / 100.0 });
     }
 
-    // --- the two web3 hooks (ADR-0005) ---
-    // Deferred to `mobile-web3-hooks-parity` (spec stories 8,9): this task is
-    // the CONTENT-seam proof (navigate + finished + non-blank), so these are
-    // wired as honest no-ops that satisfy the pinned VTable without pretending
-    // to implement the bridge/scheme hooks. The web3-hooks task attaches
-    // `addJavascriptInterface`/`evaluateJavascript` (bridge) and
-    // `shouldInterceptRequest` (scheme) through the same JavaBridge.
+    // --- up-call dispatch for the two web3 hooks (ADR-0005; spec stories 8,9) ---
+
+    /// A page-world post arrived on channel `name` (the page called
+    /// `window.<name>.postMessage(body)` via `addJavascriptInterface`). Already
+    /// marshalled onto the UI thread by the Java side (the bridge thread contract
+    /// in the module doc). Re-emits to the seam's `ScriptMessageCallback`.
+    /// `name`/`body` are borrowed for the call (the seam contract).
+    pub fn dispatchScriptMessage(self: *AndroidWebviewRenderer, name: []const u8, body: []const u8) void {
+        const cb = self.msg_cb orelse return;
+        cb.onMessage(cb.ctx, name, body);
+    }
+
+    /// A request for the registered custom scheme arrived
+    /// (`WebViewClient.shouldInterceptRequest`). Ask the seam handler for the
+    /// native body + content-type; returns null if no handler is registered (the
+    /// Java side then returns null so the WebView falls through). NOTE: this runs
+    /// on the binder thread — the ONE seam callback that is NOT UI-thread
+    /// serialized (it must answer synchronously; the module doc's thread
+    /// contract). The returned slices are borrowed until the handler is next
+    /// called (the seam contract), so the Java side copies them immediately.
+    pub fn serveSchemeRequest(self: *AndroidWebviewRenderer, uri: []const u8) ?seam.SchemeResponse {
+        const h = self.scheme_handler orelse return null;
+        return h.onRequest(h.ctx, uri);
+    }
+
+    // --- the two web3 hooks: down-calls into the Java WebView over the bridge ---
+    // The iOS/desktop twin: `setScriptMessageHandler`/`registerScheme` record
+    // the seam callback here (so the page->native + scheme-serve legs re-enter
+    // Zig) and reach the Java bridge (which installs the platform primitive).
 
     fn injectUserScript(ctx: *anyopaque, source: [*:0]const u8) void {
-        _ = ctx;
-        _ = source;
+        const self: *AndroidWebviewRenderer = @ptrCast(@alignCast(ctx));
+        self.bridge.injectUserScript(self.bridge.ctx, source);
     }
     fn setScriptMessageHandler(ctx: *anyopaque, name: [*:0]const u8, cb: seam.ScriptMessageCallback) void {
-        _ = ctx;
-        _ = name;
-        _ = cb;
+        const self: *AndroidWebviewRenderer = @ptrCast(@alignCast(ctx));
+        self.msg_cb = cb;
+        self.bridge.setScriptMessageHandler(self.bridge.ctx, name);
     }
     fn evaluateScript(ctx: *anyopaque, source: [*:0]const u8) void {
-        _ = ctx;
-        _ = source;
+        const self: *AndroidWebviewRenderer = @ptrCast(@alignCast(ctx));
+        self.bridge.evaluateScript(self.bridge.ctx, source);
     }
     fn registerScheme(ctx: *anyopaque, scheme: [*:0]const u8, handler: seam.SchemeHandler) void {
-        _ = ctx;
-        _ = scheme;
-        _ = handler;
+        const self: *AndroidWebviewRenderer = @ptrCast(@alignCast(ctx));
+        self.scheme_handler = handler;
+        self.bridge.registerScheme(self.bridge.ctx, scheme);
     }
 };
 
@@ -293,6 +365,11 @@ pub const CJavaBridge = extern struct {
     canGoForward: *const fn (ctx: ?*anyopaque) callconv(.c) bool,
     view: *const fn (ctx: ?*anyopaque) callconv(.c) ?*anyopaque,
     setViewportSize: *const fn (ctx: ?*anyopaque, width: c_int, height: c_int) callconv(.c) void,
+    // --- the two web3 hooks (ADR-0005; spec stories 8,9) ---
+    injectUserScript: *const fn (ctx: ?*anyopaque, source: [*:0]const u8) callconv(.c) void,
+    setScriptMessageHandler: *const fn (ctx: ?*anyopaque, name: [*:0]const u8) callconv(.c) void,
+    evaluateScript: *const fn (ctx: ?*anyopaque, source: [*:0]const u8) callconv(.c) void,
+    registerScheme: *const fn (ctx: ?*anyopaque, scheme: [*:0]const u8) callconv(.c) void,
 };
 
 /// Adapter state stored alongside a renderer created from the C boundary: it
@@ -338,6 +415,22 @@ const CBackend = struct {
         const self: *CBackend = @fieldParentPtr("backend", @as(*AndroidWebviewRenderer, @ptrCast(@alignCast(ctx))));
         self.cbridge.setViewportSize(self.cbridge.ctx, width, height);
     }
+    fn injectUserScript(ctx: *anyopaque, source: [*:0]const u8) void {
+        const self: *CBackend = @fieldParentPtr("backend", @as(*AndroidWebviewRenderer, @ptrCast(@alignCast(ctx))));
+        self.cbridge.injectUserScript(self.cbridge.ctx, source);
+    }
+    fn setScriptMessageHandler(ctx: *anyopaque, name: [*:0]const u8) void {
+        const self: *CBackend = @fieldParentPtr("backend", @as(*AndroidWebviewRenderer, @ptrCast(@alignCast(ctx))));
+        self.cbridge.setScriptMessageHandler(self.cbridge.ctx, name);
+    }
+    fn evaluateScript(ctx: *anyopaque, source: [*:0]const u8) void {
+        const self: *CBackend = @fieldParentPtr("backend", @as(*AndroidWebviewRenderer, @ptrCast(@alignCast(ctx))));
+        self.cbridge.evaluateScript(self.cbridge.ctx, source);
+    }
+    fn registerScheme(ctx: *anyopaque, scheme: [*:0]const u8) void {
+        const self: *CBackend = @fieldParentPtr("backend", @as(*AndroidWebviewRenderer, @ptrCast(@alignCast(ctx))));
+        self.cbridge.registerScheme(self.cbridge.ctx, scheme);
+    }
 };
 
 /// C-ABI constructor: allocate a renderer whose down-calls forward to `cbridge`
@@ -359,6 +452,10 @@ export fn wezig_android_renderer_init(cbridge: *const CJavaBridge) ?*anyopaque {
         .canGoForward = CBackend.canGoForward,
         .view = CBackend.view,
         .setViewportSize = CBackend.setViewportSize,
+        .injectUserScript = CBackend.injectUserScript,
+        .setScriptMessageHandler = CBackend.setScriptMessageHandler,
+        .evaluateScript = CBackend.evaluateScript,
+        .registerScheme = CBackend.registerScheme,
     });
     // The up-call entry points receive this same handle (the `*AndroidWebviewRenderer`).
     return &cb.backend;
@@ -399,6 +496,11 @@ export fn wezig_android_renderer_view(handle: ?*anyopaque) ?*anyopaque {
 pub const CLifecycleObserver = extern struct {
     ctx: ?*anyopaque,
     onLoadState: *const fn (ctx: ?*anyopaque, code: c_int, uri: ?[*:0]const u8) callconv(.c) void,
+    /// The document title changed (`.title_changed`). Load-bearing for the
+    /// scheme proof: the native-served body's `<title>` marker arriving here
+    /// proves it BOTH served AND rendered (the desktop `shell-scheme-test`
+    /// assertion). `title` is a borrowed C string.
+    onTitle: *const fn (ctx: ?*anyopaque, title: ?[*:0]const u8) callconv(.c) void,
 };
 
 /// The installed C observer (the seam is single-sink, so one global suffices).
@@ -426,6 +528,13 @@ fn onCObserverEvent(ctx: *anyopaque, event: seam.LifecycleEvent) void {
                 break :blk @ptrCast(&buf);
             } else null;
             obs.onLoadState(obs.ctx, code, uri_z);
+        },
+        .title_changed => |title| {
+            var buf: [512]u8 = undefined;
+            if (title.len >= buf.len) return;
+            @memcpy(buf[0..title.len], title);
+            buf[title.len] = 0;
+            obs.onTitle(obs.ctx, @ptrCast(&buf));
         },
         else => {},
     }
@@ -467,6 +576,162 @@ export fn wezig_android_on_progress(handle: ?*anyopaque, percent: c_int) void {
     self.dispatchProgress(percent);
 }
 
+// ---------------------------------------------------------------------------
+// The two web3 hooks: C-ABI down-call wrappers + up-call entry points + the C
+// observers the instrumented test subscribes THROUGH the seam (spec stories
+// 8,9). Mirrors the desktop `shell-bridge-test`/`shell-scheme-test` legs and the
+// existing lifecycle-observer surface: the test drives the hooks via the seam
+// (never the WebView directly) and observes the page->native / scheme-serve legs
+// through these C callbacks.
+// ---------------------------------------------------------------------------
+
+/// C-ABI down-call: inject a page-world script (native->page setup leg). The
+/// shim calls this on the UI thread.
+export fn wezig_android_inject_user_script(handle: ?*anyopaque, source: [*:0]const u8) void {
+    const backend: *AndroidWebviewRenderer = @ptrCast(@alignCast(handle orelse return));
+    backend.renderer().injectUserScript(source);
+}
+
+/// C-ABI down-call: evaluate JS in the current page (native->page reply leg).
+export fn wezig_android_evaluate_script(handle: ?*anyopaque, source: [*:0]const u8) void {
+    const backend: *AndroidWebviewRenderer = @ptrCast(@alignCast(handle orelse return));
+    backend.renderer().evaluateScript(source);
+}
+
+/// A C page->native message observer (the instrumented test subscribes THROUGH
+/// this, mirroring the desktop bridge test's `onBridgeMessage`). `onMessage` is
+/// a C fn pointer receiving the channel name + the message body as borrowed C
+/// strings.
+pub const CScriptMessageObserver = extern struct {
+    ctx: ?*anyopaque,
+    onMessage: *const fn (ctx: ?*anyopaque, name: ?[*:0]const u8, body: ?[*:0]const u8) callconv(.c) void,
+};
+
+/// The installed C bridge observer (the seam channel is single today).
+var c_msg_observer: ?CScriptMessageObserver = null;
+
+fn onCScriptMessage(ctx: *anyopaque, name: []const u8, body: []const u8) void {
+    _ = ctx;
+    const obs = c_msg_observer orelse return;
+    var nbuf: [128]u8 = undefined;
+    var bbuf: [2048]u8 = undefined;
+    if (name.len >= nbuf.len or body.len >= bbuf.len) return;
+    @memcpy(nbuf[0..name.len], name);
+    nbuf[name.len] = 0;
+    @memcpy(bbuf[0..body.len], body);
+    bbuf[body.len] = 0;
+    obs.onMessage(obs.ctx, @ptrCast(&nbuf), @ptrCast(&bbuf));
+}
+
+/// C-ABI: register the page->native channel `name` THROUGH the seam and install
+/// a C observer as the seam's `ScriptMessageCallback` sink, so a native caller
+/// (the instrumented test) receives the REAL page->native messages. Mirrors
+/// `wezig_android_set_lifecycle_observer` for the bridge hook.
+export fn wezig_android_set_script_message_observer(
+    handle: ?*anyopaque,
+    name: [*:0]const u8,
+    observer: *const CScriptMessageObserver,
+) void {
+    const backend: *AndroidWebviewRenderer = @ptrCast(@alignCast(handle orelse return));
+    c_msg_observer = observer.*;
+    backend.renderer().setScriptMessageHandler(name, .{ .ctx = backend, .onMessage = onCScriptMessage });
+}
+
+/// Java -> Zig: a page-world post arrived on channel `name` with `body` (the
+/// `addJavascriptInterface` object's method, already marshalled onto the UI
+/// thread by the Java side). Re-enters the seam via `dispatchScriptMessage`.
+export fn wezig_android_on_script_message(handle: ?*anyopaque, name: ?[*:0]const u8, body: ?[*:0]const u8) void {
+    const self: *AndroidWebviewRenderer = @ptrCast(@alignCast(handle orelse return));
+    const n = spanOrNull(name) orelse return;
+    const b = spanOrNull(body) orelse "";
+    self.dispatchScriptMessage(n, b);
+}
+
+/// A C custom-scheme observer (the instrumented test subscribes THROUGH this,
+/// mirroring the desktop scheme test's `onSchemeRequest`). `onRequest` serves a
+/// request URI by writing the native body + content-type into the out-params
+/// and returning true, or false if it declines. Runs on the binder thread (the
+/// module doc's thread contract) — must be thread-safe.
+pub const CSchemeObserver = extern struct {
+    ctx: ?*anyopaque,
+    onRequest: *const fn (
+        ctx: ?*anyopaque,
+        uri: ?[*:0]const u8,
+        out_body: *[*]const u8,
+        out_body_len: *usize,
+        out_content_type: *[*:0]const u8,
+    ) callconv(.c) bool,
+};
+
+var c_scheme_observer: ?CSchemeObserver = null;
+/// Storage for the last served response so its bytes outlive the seam callback
+/// (the C observer's out-params borrow into the observer's own storage; we hold
+/// the response the seam handler returns so the up-call can hand it to Java).
+var c_scheme_last: ?seam.SchemeResponse = null;
+
+fn onCSchemeRequest(ctx: *anyopaque, uri: []const u8) seam.SchemeResponse {
+    _ = ctx;
+    const obs = c_scheme_observer orelse return .{ .body = "", .content_type = "text/plain" };
+    var nbuf: [2048]u8 = undefined;
+    const uri_z: [*:0]const u8 = blk: {
+        if (uri.len >= nbuf.len) break :blk "";
+        @memcpy(nbuf[0..uri.len], uri);
+        nbuf[uri.len] = 0;
+        break :blk @ptrCast(&nbuf);
+    };
+    var body_ptr: [*]const u8 = undefined;
+    var body_len: usize = 0;
+    var ct: [*:0]const u8 = undefined;
+    if (!obs.onRequest(obs.ctx, uri_z, &body_ptr, &body_len, &ct)) {
+        return .{ .body = "", .content_type = "text/plain" };
+    }
+    return .{ .body = body_ptr[0..body_len], .content_type = std.mem.span(ct) };
+}
+
+/// C-ABI: register the custom scheme `scheme` THROUGH the seam and install a C
+/// observer as the seam's `SchemeHandler`, so a native caller (the instrumented
+/// test) serves the REAL scheme requests. Mirrors
+/// `wezig_android_set_lifecycle_observer` for the scheme hook.
+export fn wezig_android_register_scheme_observer(
+    handle: ?*anyopaque,
+    scheme: [*:0]const u8,
+    observer: *const CSchemeObserver,
+) void {
+    const backend: *AndroidWebviewRenderer = @ptrCast(@alignCast(handle orelse return));
+    c_scheme_observer = observer.*;
+    backend.renderer().registerScheme(scheme, .{ .ctx = backend, .onRequest = onCSchemeRequest });
+}
+
+/// Java -> Zig: `shouldInterceptRequest` asks native to serve `uri` on the
+/// registered custom scheme. Writes the served body + length + content-type into
+/// the out-params (borrowed until the next serve, per the seam contract) and
+/// returns true, or false if no scheme handler is registered (Java returns null
+/// so the WebView falls through). NOTE: runs on the binder thread — the one seam
+/// callback not UI-thread serialized (the module doc's thread contract).
+export fn wezig_android_serve_scheme(
+    handle: ?*anyopaque,
+    uri: ?[*:0]const u8,
+    out_body: *[*]const u8,
+    out_body_len: *usize,
+    out_content_type: *[*:0]const u8,
+) bool {
+    const self: *AndroidWebviewRenderer = @ptrCast(@alignCast(handle orelse return false));
+    const u = spanOrNull(uri) orelse return false;
+    const resp = self.serveSchemeRequest(u) orelse return false;
+    c_scheme_last = resp;
+    out_body.* = resp.body.ptr;
+    out_body_len.* = resp.body.len;
+    // Copy the content-type NUL-terminated (the seam's `content_type` is
+    // `[]const u8`, not sentinel-terminated) so Java always reads a valid C
+    // string. Single serve at a time; borrowed until the next serve.
+    const ct = std.fmt.bufPrintZ(&scheme_ct_buf, "{s}", .{resp.content_type}) catch "text/plain";
+    out_content_type.* = @ptrCast(ct.ptr);
+    return true;
+}
+
+/// NUL-terminating buffer for the last served content-type (see above).
+var scheme_ct_buf: [128]u8 = undefined;
+
 // Force the JNI `export fn`s to be analysed/emitted in a non-test static-lib
 // build (same GC-retention issue + fix as `mobile_abi` in `root.zig`).
 comptime {
@@ -479,6 +744,12 @@ comptime {
     _ = &wezig_android_navigate;
     _ = &wezig_android_renderer_view;
     _ = &wezig_android_set_lifecycle_observer;
+    _ = &wezig_android_inject_user_script;
+    _ = &wezig_android_evaluate_script;
+    _ = &wezig_android_set_script_message_observer;
+    _ = &wezig_android_on_script_message;
+    _ = &wezig_android_register_scheme_observer;
+    _ = &wezig_android_serve_scheme;
 }
 
 // ---------------------------------------------------------------------------
@@ -502,6 +773,12 @@ const FakeJava = struct {
     last_viewport: ?[2]c_int = null,
     view_token: u8 = 0,
 
+    // --- web3-hook down-call state (what the Java bridge installs) ---
+    injected: ?[]const u8 = null,
+    last_evaluated: ?[]const u8 = null,
+    msg_channel: ?[]const u8 = null,
+    registered_scheme: ?[]const u8 = null,
+
     fn bridge(self: *FakeJava) JavaBridge {
         return .{
             .ctx = self,
@@ -514,7 +791,27 @@ const FakeJava = struct {
             .canGoForward = canGoForward,
             .view = view,
             .setViewportSize = setViewportSize,
+            .injectUserScript = injectUserScript,
+            .setScriptMessageHandler = setScriptMessageHandler,
+            .evaluateScript = evaluateScript,
+            .registerScheme = registerScheme,
         };
+    }
+    fn injectUserScript(ctx: *anyopaque, source: [*:0]const u8) void {
+        const self: *FakeJava = @ptrCast(@alignCast(ctx));
+        self.injected = std.mem.span(source);
+    }
+    fn setScriptMessageHandler(ctx: *anyopaque, name: [*:0]const u8) void {
+        const self: *FakeJava = @ptrCast(@alignCast(ctx));
+        self.msg_channel = std.mem.span(name);
+    }
+    fn evaluateScript(ctx: *anyopaque, source: [*:0]const u8) void {
+        const self: *FakeJava = @ptrCast(@alignCast(ctx));
+        self.last_evaluated = std.mem.span(source);
+    }
+    fn registerScheme(ctx: *anyopaque, scheme: [*:0]const u8) void {
+        const self: *FakeJava = @ptrCast(@alignCast(ctx));
+        self.registered_scheme = std.mem.span(scheme);
     }
     fn navigate(ctx: *anyopaque, uri: [*:0]const u8) void {
         const self: *FakeJava = @ptrCast(@alignCast(ctx));
@@ -679,6 +976,147 @@ test "AndroidWebviewRenderer: title/uri/progress up-calls reach the seam" {
     try std.testing.expectEqual(@as(f64, 1.0), sink.progress);
 }
 
+test "AndroidWebviewRenderer: the script-message bridge round-trips a message both ways" {
+    // The Android twin of the desktop `shell-bridge-test`, proven headlessly at
+    // the seam-contract level (no JNI, no emulator): the native->page setup leg
+    // injects `window.wezig` (reaches the Java bridge); `setScriptMessageHandler`
+    // installs the `addJavascriptInterface` channel; the page->native leg posts a
+    // value that reaches native via `dispatchScriptMessage` (what the marshalled
+    // JS-interface up-call does); the native->page reply leg evaluates JS back.
+    const Native = struct {
+        got_name: [32]u8 = undefined,
+        got_name_len: usize = 0,
+        got_body: [32]u8 = undefined,
+        got_body_len: usize = 0,
+        fn onMessage(ctx: *anyopaque, name: []const u8, body: []const u8) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            @memcpy(self.got_name[0..name.len], name);
+            self.got_name_len = name.len;
+            @memcpy(self.got_body[0..body.len], body);
+            self.got_body_len = body.len;
+        }
+    };
+
+    var java = FakeJava{};
+    var backend = AndroidWebviewRenderer.init(java.bridge());
+    const r = backend.renderer();
+
+    r.injectUserScript("window.wezig = { ping: function(v){ wezigNative.postMessage(v); } };");
+    try std.testing.expect(java.injected != null);
+
+    var native = Native{};
+    r.setScriptMessageHandler("wezig", .{ .ctx = &native, .onMessage = Native.onMessage });
+    try std.testing.expectEqualStrings("wezig", java.msg_channel.?);
+
+    // page->native: the (UI-thread-marshalled) JS-interface up-call delivers.
+    backend.dispatchScriptMessage("wezig", "ping-from-page");
+    try std.testing.expectEqualStrings("wezig", native.got_name[0..native.got_name_len]);
+    try std.testing.expectEqualStrings("ping-from-page", native.got_body[0..native.got_body_len]);
+
+    // native->page reply leg reaches the Java bridge's evaluateJavascript.
+    r.evaluateScript("window.wezig.ping('pong-from-native');");
+    try std.testing.expectEqualStrings("window.wezig.ping('pong-from-native');", java.last_evaluated.?);
+}
+
+test "AndroidWebviewRenderer: a registered custom scheme is served from native" {
+    // The Android twin of the desktop `shell-scheme-test`: `registerScheme`
+    // records the seam handler AND reaches the Java bridge (which wires
+    // `shouldInterceptRequest`); a request re-enters via `serveSchemeRequest`
+    // (the binder-thread up-call) and is served the native body + content-type.
+    const Native = struct {
+        fn onRequest(ctx: *anyopaque, uri: []const u8) seam.SchemeResponse {
+            _ = ctx;
+            _ = uri;
+            return .{ .body = "<h1>hello from native</h1>", .content_type = "text/html" };
+        }
+    };
+
+    var java = FakeJava{};
+    var backend = AndroidWebviewRenderer.init(java.bridge());
+    const r = backend.renderer();
+
+    var native: u8 = 0;
+    r.registerScheme("wezig-test", .{ .ctx = &native, .onRequest = Native.onRequest });
+    try std.testing.expectEqualStrings("wezig-test", java.registered_scheme.?);
+
+    const resp = backend.serveSchemeRequest("wezig-test://hello").?;
+    try std.testing.expectEqualStrings("<h1>hello from native</h1>", resp.body);
+    try std.testing.expectEqualStrings("text/html", resp.content_type);
+
+    // Before registration a scheme request has no handler (Java returns null).
+    var bare_java = FakeJava{};
+    var bare = AndroidWebviewRenderer.init(bare_java.bridge());
+    try std.testing.expectEqual(@as(?seam.SchemeResponse, null), bare.serveSchemeRequest("wezig-test://x"));
+}
+
+test "C bridge + scheme observers receive the real seam legs (as the JNI shim would)" {
+    // Exercise the EXACT C-ABI surface the JNI shim/instrumented test uses for
+    // the two hooks: a C bridge observer receives the page->native post; a C
+    // scheme observer serves the request through the seam.
+    const CBridge = struct {
+        var name_buf: [32]u8 = undefined;
+        var name_len: usize = 0;
+        var body_buf: [32]u8 = undefined;
+        var body_len: usize = 0;
+        fn onMessage(_: ?*anyopaque, name: ?[*:0]const u8, body: ?[*:0]const u8) callconv(.c) void {
+            const n = std.mem.span(name.?);
+            const b = std.mem.span(body.?);
+            @memcpy(name_buf[0..n.len], n);
+            name_len = n.len;
+            @memcpy(body_buf[0..b.len], b);
+            body_len = b.len;
+        }
+    };
+    const CScheme = struct {
+        fn onRequest(
+            _: ?*anyopaque,
+            _: ?[*:0]const u8,
+            out_body: *[*]const u8,
+            out_body_len: *usize,
+            out_ct: *[*:0]const u8,
+        ) callconv(.c) bool {
+            const body = "<title>WEZIG-SCHEME-OK</title>";
+            out_body.* = body.ptr;
+            out_body_len.* = body.len;
+            out_ct.* = "text/html";
+            return true;
+        }
+    };
+    CBridge.name_len = 0;
+    CBridge.body_len = 0;
+
+    var java = FakeJava{};
+    var backend = AndroidWebviewRenderer.init(java.bridge());
+    const handle: *anyopaque = &backend;
+
+    // Bridge: register the channel + a C observer, then simulate the page post.
+    const msg_obs = CScriptMessageObserver{ .ctx = null, .onMessage = CBridge.onMessage };
+    wezig_android_set_script_message_observer(handle, "wezig", &msg_obs);
+    defer c_msg_observer = null;
+    try std.testing.expectEqualStrings("wezig", java.msg_channel.?);
+    wezig_android_on_script_message(handle, "wezig", "ping-from-page");
+    try std.testing.expectEqualStrings("wezig", CBridge.name_buf[0..CBridge.name_len]);
+    try std.testing.expectEqualStrings("ping-from-page", CBridge.body_buf[0..CBridge.body_len]);
+
+    // Scheme: register the scheme + a C observer, then simulate the intercept.
+    const scheme_obs = CSchemeObserver{ .ctx = null, .onRequest = CScheme.onRequest };
+    wezig_android_register_scheme_observer(handle, "wezig-test", &scheme_obs);
+    defer c_scheme_observer = null;
+    try std.testing.expectEqualStrings("wezig-test", java.registered_scheme.?);
+
+    var body_ptr: [*]const u8 = undefined;
+    var body_len: usize = 0;
+    var ct: [*:0]const u8 = undefined;
+    try std.testing.expect(wezig_android_serve_scheme(handle, "wezig-test://hello", &body_ptr, &body_len, &ct));
+    try std.testing.expectEqualStrings("<title>WEZIG-SCHEME-OK</title>", body_ptr[0..body_len]);
+    try std.testing.expectEqualStrings("text/html", std.mem.span(ct));
+
+    // An unregistered handle serving a scheme returns false (WebView falls through).
+    var bare_java = FakeJava{};
+    var bare = AndroidWebviewRenderer.init(bare_java.bridge());
+    try std.testing.expect(!wezig_android_serve_scheme(&bare, "wezig-test://x", &body_ptr, &body_len, &ct));
+}
+
 test "C-ABI construction path drives navigate + finished event (as the JNI shim would)" {
     // Exercise the EXACT surface the JNI shim uses: build a C fn-pointer bridge,
     // construct the renderer via `wezig_android_renderer_init`, drive a navigate
@@ -700,6 +1138,7 @@ test "C-ABI construction path drives navigate + finished event (as the JNI shim 
             return &token;
         }
         fn viewport(_: ?*anyopaque, _: c_int, _: c_int) callconv(.c) void {}
+        fn source(_: ?*anyopaque, _: [*:0]const u8) callconv(.c) void {}
     };
     CJava.navigated_len = 0;
 
@@ -714,6 +1153,10 @@ test "C-ABI construction path drives navigate + finished event (as the JNI shim 
         .canGoForward = CJava.no,
         .view = CJava.view,
         .setViewportSize = CJava.viewport,
+        .injectUserScript = CJava.source,
+        .setScriptMessageHandler = CJava.source,
+        .evaluateScript = CJava.source,
+        .registerScheme = CJava.source,
     };
     const handle = wezig_android_renderer_init(&cbridge).?;
     defer wezig_android_renderer_deinit(handle);
@@ -755,6 +1198,8 @@ test "C lifecycle observer receives the real seam .finished event" {
         var finished_code: c_int = -1;
         var finished_uri: [128]u8 = undefined;
         var finished_uri_len: usize = 0;
+        var last_title: [64]u8 = undefined;
+        var last_title_len: usize = 0;
         fn onLoadState(_: ?*anyopaque, code: c_int, uri: ?[*:0]const u8) callconv(.c) void {
             if (code == @intFromEnum(AndroidLoadEvent.page_finished)) {
                 finished_code = code;
@@ -765,21 +1210,32 @@ test "C lifecycle observer receives the real seam .finished event" {
                 }
             }
         }
+        fn onTitle(_: ?*anyopaque, title: ?[*:0]const u8) callconv(.c) void {
+            if (title) |t| {
+                const s = std.mem.span(t);
+                @memcpy(last_title[0..s.len], s);
+                last_title_len = s.len;
+            }
+        }
     };
     CObs.finished_code = -1;
     CObs.finished_uri_len = 0;
+    CObs.last_title_len = 0;
 
     var java = FakeJava{};
     var backend = AndroidWebviewRenderer.init(java.bridge());
-    const observer = CLifecycleObserver{ .ctx = null, .onLoadState = CObs.onLoadState };
+    const observer = CLifecycleObserver{ .ctx = null, .onLoadState = CObs.onLoadState, .onTitle = CObs.onTitle };
     wezig_android_set_lifecycle_observer(&backend, &observer);
     defer c_observer = null;
 
     wezig_android_on_load_state(&backend, @intFromEnum(AndroidLoadEvent.page_started), "https://obs.example/");
     wezig_android_on_load_state(&backend, @intFromEnum(AndroidLoadEvent.page_finished), "https://obs.example/");
 
+    // The title also reaches the C observer (the scheme proof's render check).
+    wezig_android_on_title_changed(&backend, "WEZIG-SCHEME-OK");
     try std.testing.expectEqual(@intFromEnum(AndroidLoadEvent.page_finished), CObs.finished_code);
     try std.testing.expectEqualStrings("https://obs.example/", CObs.finished_uri[0..CObs.finished_uri_len]);
+    try std.testing.expectEqualStrings("WEZIG-SCHEME-OK", CObs.last_title[0..CObs.last_title_len]);
 }
 
 test "wezig_android_on_* entry points are null-safe (defensive JNI boundary)" {
@@ -789,6 +1245,11 @@ test "wezig_android_on_* entry points are null-safe (defensive JNI boundary)" {
     wezig_android_on_uri_changed(null, null);
     wezig_android_on_title_changed(null, null);
     wezig_android_on_progress(null, 50);
+    wezig_android_on_script_message(null, null, null);
+    var b: [*]const u8 = undefined;
+    var bl: usize = 0;
+    var ct: [*:0]const u8 = undefined;
+    try std.testing.expect(!wezig_android_serve_scheme(null, null, &b, &bl, &ct));
 
     // A real handle with a null URI on `.finished` still emits (uri = null).
     var java = FakeJava{};

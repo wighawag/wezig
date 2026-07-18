@@ -168,3 +168,48 @@ jobs:
           disable-animations: true
           working-directory: mobile/android
           script: gradle connectedDebugAndroidTest --no-daemon
+
+  # The iOS script-message BRIDGE proof (task mobile-web3-hooks-parity, spec
+  # explore-mobile-shell story 8): round-trip ONE message BOTH ways THROUGH the
+  # pinned `Renderer` seam over a WKWebView (WKUserContentController /
+  # WKScriptMessageHandler + evaluateJavaScript), mirroring the desktop
+  # `shell-bridge-test`. A DEDICATED leg kept OUT of `zig build test`.
+  ios-bridge-proof:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Show Xcode + available iOS runtimes
+        run: |
+          xcodebuild -version
+          xcrun simctl list runtimes
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+
+      - name: Round-trip the script-message bridge through the seam on an iOS 17 Simulator
+        run: mobile/ios/bridge-proof.sh
+
+  # The iOS custom-SCHEME proof (task mobile-web3-hooks-parity, spec
+  # explore-mobile-shell story 9): serve ONE `wezig-test://hello` request from
+  # native THROUGH the pinned `Renderer` seam over a WKWebView (WKURLSchemeHandler
+  # registered on the config BEFORE the webview is created — the iOS ordering
+  # constraint), mirroring the desktop `shell-scheme-test`. A DEDICATED leg kept
+  # OUT of `zig build test`.
+  ios-scheme-proof:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Show Xcode + available iOS runtimes
+        run: |
+          xcodebuild -version
+          xcrun simctl list runtimes
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+
+      - name: Serve one custom-scheme request through the seam on an iOS 17 Simulator
+        run: mobile/ios/scheme-proof.sh
