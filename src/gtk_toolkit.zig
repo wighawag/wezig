@@ -31,8 +31,13 @@ pub const ToolkitError = error{
 };
 
 /// A `Toolkit` backed by GTK4. Construct with `init` (initialises GTK), obtain
-/// the seam value with `toolkit()`, and hand THAT to the chrome. The chrome
-/// never sees a GTK type.
+/// the composed seam value with `toolkit()`, and hand THAT to the chrome. The
+/// chrome never sees a GTK type.
+///
+/// `GtkToolkit` implements BOTH halves of the split seam (ADR-0008): the
+/// `ChromeSurface` half (widgets + intents) AND the desktop-only `HostLoop` half
+/// (window + main loop). `toolkit()` composes them into the desktop `Toolkit`
+/// the chrome drives. (A mobile toolkit would implement only `ChromeSurface`.)
 pub const GtkToolkit = struct {
     window: ?*c.GtkWindow = null,
     /// Vertical box: [toolbar][content]. The window's single child.
@@ -52,21 +57,36 @@ pub const GtkToolkit = struct {
         return .{};
     }
 
-    pub fn toolkit(self: *GtkToolkit) seam.Toolkit {
-        return .{ .ptr = self, .vtable = &vtable };
+    /// The chrome-surface half (widgets + intents). A mobile GTK-less toolkit
+    /// would expose an analogous surface with no `hostLoop()`.
+    pub fn chromeSurface(self: *GtkToolkit) seam.ChromeSurface {
+        return .{ .ptr = self, .vtable = &surface_vtable };
     }
 
-    const vtable = seam.Toolkit.VTable{
-        .createWindow = createWindow,
-        .setTitle = setTitle,
+    /// The host/loop half (window + GTK main loop). Desktop-only.
+    pub fn hostLoop(self: *GtkToolkit) seam.HostLoop {
+        return .{ .ptr = self, .vtable = &host_vtable };
+    }
+
+    /// The composed desktop `Toolkit` (both halves) handed to the chrome.
+    pub fn toolkit(self: *GtkToolkit) seam.Toolkit {
+        return seam.Toolkit.compose(self.chromeSurface(), self.hostLoop());
+    }
+
+    const surface_vtable = seam.ChromeSurface.VTable{
         .embedView = embedView,
-        .present = present,
-        .run = run,
-        .quit = quit,
         .setUrlText = setUrlText,
         .setBackEnabled = setBackEnabled,
         .setForwardEnabled = setForwardEnabled,
         .setChromeCallback = setChromeCallback,
+    };
+
+    const host_vtable = seam.HostLoop.VTable{
+        .createWindow = createWindow,
+        .setTitle = setTitle,
+        .present = present,
+        .run = run,
+        .quit = quit,
     };
 
     fn createWindow(ctx: *anyopaque, width: c_int, height: c_int) void {

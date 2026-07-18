@@ -36,9 +36,11 @@ pub const paint = @import("paint.zig");
 /// `SystemWebviewRenderer` (in the shell exe) implements it on WebKitGTK.
 pub const renderer = @import("renderer.zig");
 
-/// The chrome/toolkit seam (ADR-0006): the chrome-host boundary (window +
-/// widgets, windowing behind it). Pure interface (no GTK binding); `GtkToolkit`
-/// (in the shell exe) implements it on GTK4.
+/// The chrome/toolkit seam (ADR-0006, ADR-0008): the chrome-host boundary, SPLIT
+/// into a `ChromeSurface` half (widgets + intents, both platforms) and a
+/// desktop-only `HostLoop` half (window + main loop), composed into `Toolkit`.
+/// Pure interface (no GTK binding); `GtkToolkit` (in the shell exe) implements
+/// both halves on GTK4; a mobile toolkit implements only `ChromeSurface`.
 pub const toolkit = @import("toolkit.zig");
 
 /// The minimal chrome (one window, URL bar, back/forward) that talks ONLY to
