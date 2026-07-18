@@ -96,7 +96,8 @@ queue); it is Android-specific and load-bearing for the web3-hooks task
   `GtkWidget`; only the Android embedding code downcasts it. The Q3 lifetime/
   thread-affinity risk (a JNI ref is not a raw pointer) is confirmed carryable
   by the opaque contract for the navigate-one-page case; the
-  embedding-proof task (`mobile-viewhandle-embedding-proof`) exercises hosting.
+  embedding-proof task (`mobile-viewhandle-embedding-proof`) exercises hosting
+  — CONFIRMED sufficient (see "The ViewHandle-embedding proof" below).
 - **Down-calls behind a `JavaBridge` fn-pointer table** (not a hard `@extern`
   to the shim): this is what lets the backend be driven by a FAKE bridge in
   `zig build test`, mirroring `FakeRenderer`. Alternative (direct extern) was
@@ -139,6 +140,61 @@ Hetzner dev box cannot run it. That is exactly why the emulator RUN proof was
 delegated from `android-renderer-backend-oneshot` to this CI verification leg.
 The core `zig build test` gate stays device-free — no emulator dependency leaks
 into it.
+## The ViewHandle-embedding proof (spec Q3/story 6) and its finding
+
+The embedding proof (`mobile-viewhandle-embedding-proof`) resolves ADR-0007's
+flagged cross-toolkit-embedding spike on Android — the SHARP mobile risk. It
+hosts the renderer's `WebView` through the mobile chrome-surface `embedView`
+seam and shows a page, driven THROUGH the seam (not a direct `addView`):
+
+- **Zig side** (`src/mobile_chrome_surface.zig`, `MobileChromeSurface`): the
+  chrome-surface half of the split `Toolkit` (ADR-0008) for the mobile host. Its
+  `embedView` forwards the OPAQUE `ViewHandle` unchanged to a native embed op via
+  a C-ABI `EmbedPlatform` ops table (mirroring `WkPlatform`/`CJavaBridge`). Pure
+  Zig — no `jni.h`, no `android.webkit.*` — so its seam-contract tests run
+  headlessly in `zig build test`.
+- **JNI shim** (`wezig_embedding_jni.c`): the mechanical glue. Its `embed_view`
+  op downcasts the opaque handle back to the `WebView` jobject and calls the Java
+  controller's `doEmbedView`. The ONLY place the opaque handle is interpreted.
+- **Java side** (`WezigEmbeddingController.java`): owns the container `ViewGroup`
+  and `doEmbedView(WebView)` = `container.addView(webView)`. The only view-
+  hierarchy toucher.
+- **Proof:** the instrumented `EmbeddingProofTest` gets the renderer's opaque
+  handle from the `Renderer` seam (`wezig_android_renderer_view`, a JNI global-
+  ref), embeds it THROUGH `ChromeSurface.embedView`, and asserts the WebView
+  became a child of the container AND the container draws the page non-blank.
+  **Execution:** the on-emulator RUN is delegated to the KVM x86_64-emulator leg
+  `mobile-verification-legs-ci` stands up (its `connectedAndroidTest` picks this
+  test up automatically); this change's `mobile-android.yml` only builds the APK.
+  So here Android is proven by construction + the headless Zig seam-contract
+  tests + this ready-to-run instrumented test; the live-emulator confirmation
+  lands with that leg (see the finding note's "Confidence status").
+
+### FINDING — the opaque `ViewHandle` is CONFIRMED sufficient on Android (spec Q3)
+
+The opaque `*anyopaque` contract cleanly carries the JNI global-ref across the
+chrome-surface↔renderer boundary:
+
+- **Lifetime:** the handle is a JNI GLOBAL ref (`NewGlobalRef` in `bridge_view`),
+  so it survives past the JNI call that produced it and stays valid while the
+  chrome holds the view — exactly what a raw-pointer handle would. The opaque
+  contract need not know it is a ref: the bits are copied through untouched and
+  the native side (which OWNS the ref lifetime) downcasts them. No typed-handle /
+  handle-with-vtable refinement is needed.
+- **Thread-affinity:** the embed itself (`ViewGroup.addView`) must run on the UI
+  thread — an Android view-hierarchy constraint, NOT a seam-contract gap. It is
+  the caller's responsibility (the test embeds inside `runOnMainSync`), the same
+  way the desktop backend's `embedView` runs on the GTK main loop. The seam
+  carries the opaque handle regardless of thread; interpretation happens on the
+  thread the platform requires. So thread-affinity is a native-side rule, not a
+  missing contract at `ChromeSurface.embedView`.
+
+**Verdict:** ADR-0006's opaque `ViewHandle` is sufficient across a non-GTK
+toolkit↔backend boundary on BOTH mobile platforms; ADR-0007's flagged
+cross-toolkit-embedding spike is resolved (confirmed, not refined). Recorded
+durably in
+`work/notes/findings/viewhandle-crosses-mobile-toolkit-boundary-2026-07-18.md`
+and fed back to the mobile ADR by `mobile-adr-and-build-plan`.
 
 ## Layout
 
@@ -147,6 +203,13 @@ into it.
   greeting to Java.
 - `app/src/main/cpp/wezig_renderer_jni.c` — the `Renderer` backend JNI bridge
   (Zig↔Java, both directions) for the story-5 seam proof.
+- `app/src/main/cpp/wezig_embedding_jni.c` — the chrome-surface embedding JNI
+  bridge (spec Q3/story 6): downcasts the opaque `ViewHandle` and calls
+  `doEmbedView`.
+- `app/src/main/java/.../WezigEmbeddingController.java` — the Android
+  chrome-surface embedding host (owns the container, implements `doEmbedView`).
+- `app/src/androidTest/java/.../EmbeddingProofTest.java` — the instrumented
+  ViewHandle-embedding assertion (embed via the seam + page shows non-blank).
 - `app/src/main/java/.../WezigWebViewController.java` — the Android `Renderer`
   backend's Java half (the sole `android.webkit.*` toucher).
 - `app/src/androidTest/java/.../RendererSeamTest.java` — the instrumented

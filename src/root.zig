@@ -78,6 +78,15 @@ pub const mobile_abi = @import("mobile_abi.zig");
 /// the display-free `zig build test` gate.
 pub const ios_webview_renderer = @import("ios_webview_renderer.zig");
 
+/// The mobile `ChromeSurface` backend (ADR-0006/0008; spec `explore-mobile-shell`
+/// Q3/story 6): `MobileChromeSurface` implements the chrome-surface half of the
+/// split `Toolkit` for the iOS/Android chrome host, `embedView`-ing the
+/// renderer's OPAQUE `ViewHandle` (a `WKWebView` `UIView*` / a JNI global-ref to
+/// an `android.webkit.WebView`) through a C-ABI ops table — the module that
+/// resolves ADR-0007's flagged cross-toolkit-embedding spike on mobile. Pure Zig
+/// (no UIKit / `jni.h`), so its seam-contract tests run in `zig build test`.
+pub const mobile_chrome_surface = @import("mobile_chrome_surface.zig");
+
 // Force the mobile C-ABI `export fn`s to be ANALYSED (and thus emitted) in a
 // NON-test build. Without this, `mobile_abi` is only referenced from the test
 // block below, so a plain `zig build android-lib`/`ios-lib` would garbage-collect
@@ -87,6 +96,7 @@ pub const ios_webview_renderer = @import("ios_webview_renderer.zig");
 comptime {
     _ = mobile_abi;
     _ = android_renderer;
+    _ = mobile_chrome_surface;
 }
 
 /// Trivial placeholder so `zig build test` has real behaviour to assert on.
@@ -117,4 +127,5 @@ test {
     _ = chrome;
     _ = mobile_abi;
     _ = ios_webview_renderer;
+    _ = mobile_chrome_surface;
 }

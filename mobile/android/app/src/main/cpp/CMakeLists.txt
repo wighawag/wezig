@@ -26,7 +26,8 @@ set_target_properties(wezig_mobile PROPERTIES
     IMPORTED_LOCATION "${WEZIG_ZIG_LIB}")
 
 # The JNI shims: the toolchain greeting proof (wezig_jni.c) + the Renderer
-# backend bridge (wezig_renderer_jni.c, spec story 5). Both link the Zig core.
-add_library(wezigshell SHARED wezig_jni.c wezig_renderer_jni.c)
+# backend bridge (wezig_renderer_jni.c, spec story 5) + the ViewHandle-embedding
+# bridge (wezig_embedding_jni.c, spec Q3/story 6). All link the Zig core.
+add_library(wezigshell SHARED wezig_jni.c wezig_renderer_jni.c wezig_embedding_jni.c)
 target_include_directories(wezigshell PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(wezigshell wezig_mobile log)

@@ -19,6 +19,10 @@ on:
     paths:
       - "mobile/android/**"
       - "src/mobile_abi.zig"
+      - "src/android_renderer.zig"
+      - "src/mobile_chrome_surface.zig"
+      - "src/renderer.zig"
+      - "src/toolkit.zig"
       - "build.zig"
       - ".github/workflows/mobile-android.yml"
 

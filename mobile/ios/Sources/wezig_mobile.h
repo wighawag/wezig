@@ -74,6 +74,59 @@ void wezig_ios_proof_set_snapshot_non_blank(void *ctx, bool non_blank);
  * non-blank (the two facts spec story 4 requires). */
 bool wezig_ios_proof_passed(void *ctx);
 
+/*
+ * iOS ViewHandle-EMBEDDING proof C-ABI (spec explore-mobile-shell, Q3/story 6).
+ *
+ * The embedding proof drives BOTH seams: it constructs the iOS `Renderer` backend
+ * AND a mobile `ChromeSurface` (src/mobile_chrome_surface.zig), then embeds the
+ * renderer's OPAQUE `ViewHandle` (the WKWebView's UIView*) THROUGH the
+ * chrome-surface seam (`surface.embedView(renderer.view())`) — resolving
+ * ADR-0007's flagged cross-toolkit-embedding case on iOS. Swift installs the
+ * WKWebView ops (as in the renderer proof) AND the container's embed ops; when
+ * the page finishes, Swift snapshots the CONTAINER (not the webview directly)
+ * and reports non-blank. Keep in lock-step with `src/mobile_chrome_surface.zig`.
+ */
+
+/* The chrome-surface embed-op signatures. `host` is the Swift container cookie. */
+typedef void (*wezig_embed_view_fn)(void *host, void *view);
+typedef void (*wezig_embed_url_fn)(void *host, const char *text);
+typedef void (*wezig_embed_enabled_fn)(void *host, bool enabled);
+
+/* Construct the iOS Renderer backend + the mobile ChromeSurface, embed the
+ * renderer's view THROUGH the chrome-surface seam, and navigate one page. Returns
+ * an opaque proof context for the callbacks. */
+void *wezig_ios_embed_proof_start(
+    void *wk,
+    void *view,
+    wezig_wk_navigate_fn navigate,
+    wezig_wk_action_fn reload,
+    wezig_wk_action_fn stop,
+    wezig_wk_action_fn goBack,
+    wezig_wk_action_fn goForward,
+    wezig_wk_query_fn canGoBack,
+    wezig_wk_query_fn canGoForward,
+    wezig_wk_viewport_fn setViewportSize,
+    wezig_wk_source_fn injectUserScript,
+    wezig_wk_source_fn evaluateScript,
+    void *embed_host,
+    wezig_embed_view_fn embedView,
+    wezig_embed_url_fn setUrlText,
+    wezig_embed_enabled_fn setBackEnabled,
+    wezig_embed_enabled_fn setForwardEnabled,
+    const char *uri);
+
+/* Forward a WKNavigationDelegate load-state change to the seam (same codes as
+ * wezig_ios_on_load_state): 0=started,1=committed,2=finished,3=failed. */
+void wezig_ios_embed_on_load_state(void *ctx, int state, const char *uri);
+
+/* Report whether the EMBEDDED container's snapshot scanned non-blank. */
+void wezig_ios_embed_set_non_blank(void *ctx, bool non_blank);
+
+/* The verdict: true iff the seam delivered `.finished` AND the EMBEDDED view
+ * rendered non-blank (the opaque handle carried the view across the seam and the
+ * page showed). */
+bool wezig_ios_embed_proof_passed(void *ctx);
+
 #ifdef __cplusplus
 }
 #endif

@@ -76,6 +76,28 @@ jobs:
         # non-blank snapshot). Same script used locally on a Mac.
         run: mobile/ios/renderer-proof.sh
 
+  # ---- iOS ViewHandle-embedding proof (task mobile-viewhandle-embedding-proof,
+  # Q3/story 6): a mobile chrome-surface `embedView`s the renderer's WKWebView
+  # view (carried across the seam as the OPAQUE ViewHandle) and the page shows.
+  # Asserts a `.finished` seam event + a non-blank snapshot of the EMBEDDED
+  # container. Resolves ADR-0007's flagged cross-toolkit-embedding spike on iOS.
+  ios-embedding-proof:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Show Xcode + available iOS runtimes
+        run: |
+          xcodebuild -version
+          xcrun simctl list runtimes
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+
+      - name: Embed the renderer view via ChromeSurface.embedView on an iOS 17 Simulator
+        run: mobile/ios/embedding-proof.sh
+
   # ---- Android leg: instrumented WebView proof on a KVM x86_64 emulator ------
   # The Android twin of the desktop `zig build shell-test`. Boots a headless
   # x86_64 emulator (KVM-accelerated), installs the APK, and runs the

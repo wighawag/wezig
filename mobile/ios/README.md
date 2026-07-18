@@ -100,3 +100,32 @@ from the expensive Xvfb `shell-*` proofs (spec Q6 / ADR-0007):
 
 The core `zig build test` gate stays device-free — no simulator dependency
 leaks into it; only the `Fake*`/seam-contract tests run there.
+## The ViewHandle-embedding proof (task `mobile-viewhandle-embedding-proof`, Q3/story 6)
+
+A third proof resolves ADR-0007's flagged cross-toolkit-embedding spike on iOS: a
+mobile chrome-surface `embedView`s the renderer's `WKWebView` view (carried
+across the seam as the OPAQUE `ViewHandle`) and the page shows.
+
+- **The chrome-surface is Zig** (`src/mobile_chrome_surface.zig`,
+  `MobileChromeSurface`): the `ChromeSurface` half of the split `Toolkit`
+  (ADR-0008) for the mobile host. Its `embedView` forwards the opaque handle
+  UNCHANGED to a Swift-installed C-ABI `EmbedPlatform` op; only Swift interprets
+  it as a `UIView*` (`addSubview`). So the view reaches the screen THROUGH the
+  backend-agnostic seam, not a raw `addSubview` reached around it.
+- **`Sources/EmbeddingProof.swift` is the sole WKWebView/UIKit toucher** for this
+  proof: it owns the `WKWebView` + delegate + a container `UIView`, implements the
+  embed op, and snapshots the CONTAINER (not the webview directly) to assert the
+  page is visible through the embedded view.
+- The seam-CONTRACT tests (the chrome-surface forwards the opaque handle to the
+  embed op, headless) run in `zig build test`; the REAL end-to-end proof runs on
+  the `ios-embedding-proof` CI leg (macos-14, iOS 17 simulator) via
+  `mobile/ios/embedding-proof.sh`.
+- **Finding:** the opaque `ViewHandle` is CONFIRMED sufficient across the mobile
+  toolkit↔renderer boundary on both platforms — no typed-handle refinement needed
+  (`work/notes/findings/viewhandle-crosses-mobile-toolkit-boundary-2026-07-18.md`).
+
+- `Sources/EmbeddingProof.swift` — the embedding-proof app: owns the `WKWebView`
+  + delegate + container, embeds the renderer's view via the chrome-surface seam,
+  asserts finished + a non-blank container snapshot. The sole WKWebView toucher.
+- `embedding-proof.sh` — the embedding-proof driver: same build shape as
+  `renderer-proof.sh`, launches `EmbeddingProof.swift`, asserts the embed PASS line.

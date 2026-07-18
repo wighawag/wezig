@@ -377,6 +377,18 @@ export fn wezig_android_navigate(handle: ?*anyopaque, uri: [*:0]const u8) void {
     backend.renderer().navigate(uri);
 }
 
+/// C-ABI: return the renderer's opaque `ViewHandle` (a JNI global-ref to the
+/// `WebView`) via the seam's `view()`. The embedding proof
+/// (`mobile-viewhandle-embedding-proof`, spec Q3/story 6) obtains THIS handle and
+/// hands it to `wezig_android_embed_view` (mobile_chrome_surface.zig), so the
+/// JNI global-ref crosses the chrome-surface seam as an opaque `*anyopaque`.
+/// Returns null if no proof is active. The caller must NOT delete the returned
+/// global-ref (the JNI bridge owns it).
+export fn wezig_android_renderer_view(handle: ?*anyopaque) ?*anyopaque {
+    const backend: *AndroidWebviewRenderer = @ptrCast(@alignCast(handle orelse return null));
+    return backend.renderer().view();
+}
+
 /// The seam `LifecycleCallback` sink used when the native side must report
 /// events back UP to a C observer (the instrumented test / a future native
 /// chrome). `onEvent` is a C fn pointer; the load state is passed as the raw
@@ -465,6 +477,7 @@ comptime {
     _ = &wezig_android_renderer_init;
     _ = &wezig_android_renderer_deinit;
     _ = &wezig_android_navigate;
+    _ = &wezig_android_renderer_view;
     _ = &wezig_android_set_lifecycle_observer;
 }
 
@@ -723,6 +736,11 @@ test "C-ABI construction path drives navigate + finished event (as the JNI shim 
 
     // The view handle is the fake WebView token, carried opaquely.
     try std.testing.expectEqual(@as(seam.ViewHandle, @ptrCast(&CJava.token)), backend.renderer().view());
+
+    // The embedding proof obtains the SAME opaque handle via the C-ABI accessor
+    // (a JNI global-ref on the real emulator) — the bits it hands to
+    // `wezig_android_embed_view` across the chrome-surface seam.
+    try std.testing.expectEqual(@as(?*anyopaque, @ptrCast(&CJava.token)), wezig_android_renderer_view(handle));
 
     // Up-call: the WebViewClient's finished callback reaches the seam.
     wezig_android_on_load_state(handle, @intFromEnum(AndroidLoadEvent.page_finished), "https://c-abi.example/");
