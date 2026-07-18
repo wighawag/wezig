@@ -50,11 +50,80 @@ subdir.) Both ABIs produce a `current ar archive` static lib.
   packaging (APK, `WebView` Activity).
 - **compileSdk 34 / minSdk 26 / targetSdk 34**; AGP 8.5, Gradle 8.7.
 
+## The `Renderer` backend (spec story 5) and its findings
+
+The Android `Renderer` seam backend (`android-renderer-backend-oneshot`) is
+implemented as a Zig↔Java bridge over JNI, satisfying the SAME pinned `Renderer`
+interface as the desktop `SystemWebviewRenderer` (WebKitGTK):
+
+- **Zig side** (`src/android_renderer.zig`, in the linked static core): the
+  `AndroidWebviewRenderer` `Renderer` VTable. Pure Zig — imports NO `jni.h` and
+  NO `android.webkit.*`, so its seam-contract tests run headlessly inside
+  `zig build test` (unlike the desktop backend, which links native GTK/WebKit
+  and is shell-exe-only). Down-calls go through a `JavaBridge` fn-pointer table;
+  up-calls arrive at C-ABI `wezig_android_on_*` entry points.
+- **Java side** (`WezigWebViewController.java`): the ONLY code that touches
+  `android.webkit.*`. Drives one `WebView` + a `WebViewClient`/`WebChromeClient`
+  whose load callbacks it maps to the seam's `LifecycleEvent` union.
+- **JNI shim** (`wezig_renderer_jni.c`): the mechanical glue — the ONLY place
+  `jni.h` meets the Zig C-ABI. Down-calls call Java `do*` methods; up-calls
+  convert the jstring and forward to the Zig entry points.
+- **Proof:** the local floor (backend + wiring compile, the contract holds) is
+  the headless Zig tests + the full native link
+  (`libwezigshell.so` = shim + Zig core links, all JNI symbols resolve). The
+  real one-page proof (navigate + `.finished` seam event + non-blank bitmap) is
+  the instrumented `RendererSeamTest` run on an x86_64 emulator by
+  `mobile-verification-legs-ci`.
+
+### FINDING — the thread contract (spec Q5, the KNOWN GAP)
+
+`WebViewClient` callbacks (`onPageStarted`/`onPageFinished`/…) and
+`shouldInterceptRequest` run on NON-UI (binder) threads, but the seam's
+`LifecycleCallback` is single-sink and expected on one thread (the desktop
+backend emits on the GTK main loop). **Resolution:** `WezigWebViewController`
+marshals EVERY `WebViewClient`/`WebChromeClient` callback onto the UI thread (a
+`Handler(Looper.getMainLooper())` post) BEFORE it crosses into the Zig up-call.
+So the native `android_renderer.zig` performs no cross-thread work and the chrome
+sees lifecycle events serialized exactly as on desktop. This is the same gap the
+iOS backend does NOT have (`WKNavigationDelegate` already fires on the main
+queue); it is Android-specific and load-bearing for the web3-hooks task
+(`shouldInterceptRequest` marshalling for `ipfs://`).
+
+### DECISIONS (recorded for the reviewer / downstream tasks)
+
+- **Opaque `ViewHandle` = a JNI global ref to the `WebView`** (spec Q3), created
+  in `bridge_view`. Carried opaquely across the seam exactly like the desktop
+  `GtkWidget`; only the Android embedding code downcasts it. The Q3 lifetime/
+  thread-affinity risk (a JNI ref is not a raw pointer) is confirmed carryable
+  by the opaque contract for the navigate-one-page case; the
+  embedding-proof task (`mobile-viewhandle-embedding-proof`) exercises hosting.
+- **Down-calls behind a `JavaBridge` fn-pointer table** (not a hard `@extern`
+  to the shim): this is what lets the backend be driven by a FAKE bridge in
+  `zig build test`, mirroring `FakeRenderer`. Alternative (direct extern) was
+  rejected because it would force JNI into every headless test.
+- **The two web3 hooks are honest no-ops here.** `injectUserScript`/
+  `setScriptMessageHandler`/`evaluateScript`/`registerScheme` satisfy the pinned
+  VTable but do nothing; this task is the CONTENT-seam proof only. They are
+  wired (`addJavascriptInterface`/`evaluateJavascript` + `shouldInterceptRequest`)
+  by `mobile-web3-hooks-parity` (spec stories 8,9). Recorded so a reader is not
+  surprised the hooks are stubs.
+- **Load-event codes are a stable JNI integer enum** (`AndroidLoadEvent`,
+  0=started/1=committed/2=finished/3=failed) kept in lock-step between
+  `WezigWebViewController` and `android_renderer.zig`, decoupled from the seam
+  enum's declaration order so the JNI boundary carries a fixed contract.
+
 ## Layout
 
 - `app/src/main/cpp/wezig_jni.c` — the JNI shim: `System.loadLibrary` entry that
   calls the Zig C-ABI (`wezig_abi_version`/`wezig_greeting`) and returns the
   greeting to Java.
+- `app/src/main/cpp/wezig_renderer_jni.c` — the `Renderer` backend JNI bridge
+  (Zig↔Java, both directions) for the story-5 seam proof.
+- `app/src/main/java/.../WezigWebViewController.java` — the Android `Renderer`
+  backend's Java half (the sole `android.webkit.*` toucher).
+- `app/src/androidTest/java/.../RendererSeamTest.java` — the instrumented
+  reference assertion (navigate + `.finished` seam event + non-blank snapshot),
+  the mobile analogue of the desktop `shell-test`.
 - `app/src/main/cpp/CMakeLists.txt` — links the prebuilt Zig static lib (per ABI)
   into `libwezigshell.so`.
 - `app/src/main/java/dev/wighawag/wezig/MainActivity.java` — loads the lib and

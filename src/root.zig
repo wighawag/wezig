@@ -36,6 +36,15 @@ pub const paint = @import("paint.zig");
 /// `SystemWebviewRenderer` (in the shell exe) implements it on WebKitGTK.
 pub const renderer = @import("renderer.zig");
 
+/// The Android `Renderer` backend (ADR-0005/0006; spec `explore-mobile-shell`
+/// story 5): `AndroidWebviewRenderer` satisfies the pinned `Renderer` seam over
+/// `android.webkit.WebView`, bridging Zig↔Java over JNI. Pure Zig (no `jni.h`,
+/// no `android.webkit.*` — those live in the Java `WezigWebViewController` and
+/// the JNI shim), so it builds into the mobile static lib AND runs its headless
+/// seam-contract tests in `zig build test`, unlike the desktop backend which
+/// links native GTK/WebKit and stays shell-exe-only.
+pub const android_renderer = @import("android_renderer.zig");
+
 /// The chrome/toolkit seam (ADR-0006, ADR-0008): the chrome-host boundary, SPLIT
 /// into a `ChromeSurface` half (widgets + intents, both platforms) and a
 /// desktop-only `HostLoop` half (window + main loop), composed into `Toolkit`.
@@ -70,6 +79,7 @@ pub const mobile_abi = @import("mobile_abi.zig");
 // build harmlessly carries the same exports — they are tiny and unused there.)
 comptime {
     _ = mobile_abi;
+    _ = android_renderer;
 }
 
 /// Trivial placeholder so `zig build test` has real behaviour to assert on.
@@ -95,6 +105,7 @@ test {
     _ = docs;
     _ = chrome_conformance;
     _ = renderer;
+    _ = android_renderer;
     _ = toolkit;
     _ = chrome;
     _ = mobile_abi;
