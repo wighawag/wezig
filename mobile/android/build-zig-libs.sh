@@ -2,7 +2,15 @@
 # Cross-compile the wezig Zig static lib for the Android ABIs into the per-ABI
 # staging dir the Gradle/CMake build reads (mobile/android/app/.cxx-zig/<abi>/).
 # Also copies the shared C-ABI header next to the JNI shim so the NDK build is
-# self-contained. Run this BEFORE `gradle assembleDebug`.
+# self-contained.
+#
+# NOTE (spec build-mobile-shell, criterion 4): the Gradle build now cross-compiles
+# the Zig static lib itself, as a NORMAL build step — the `buildZigLibs` task in
+# app/build.gradle, which the native (CMake) build depends on. So a plain
+# `gradle assembleDebug` builds everything; this script is NO LONGER required
+# before it. It is kept only as a standalone convenience for building the staged
+# libs by hand (its logic is mirrored by the Gradle task). The CI legs run the
+# Gradle build directly.
 #
 # Requires: Zig on PATH, and ANDROID_NDK_HOME (or ANDROID_NDK_ROOT) pointing at
 # an installed NDK. Closes the stb_truetype libc-header gap via the NDK sysroot.

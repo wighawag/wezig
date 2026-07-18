@@ -21,6 +21,8 @@ on:
       - "src/mobile_abi.zig"
       - "src/android_renderer.zig"
       - "src/mobile_chrome_surface.zig"
+      - "src/mobile_chrome.zig"
+      - "src/android_shell.zig"
       - "src/renderer.zig"
       - "src/toolkit.zig"
       - "build.zig"
@@ -52,10 +54,11 @@ jobs:
 
       - name: Set up Zig
         # Empty version => resolved from build.zig.zon's minimum_zig_version.
+        # `gradle assembleDebug` cross-compiles the Zig static lib itself, as a
+        # NORMAL Gradle step (app/build.gradle's `buildZigLibs` task, which the
+        # native build depends on), so no out-of-band build-zig-libs.sh run here
+        # — Zig just needs to be on PATH for the Gradle task to invoke.
         uses: mlugg/setup-zig@v2
-
-      - name: Cross-compile the wezig Zig static libs for both ABIs (NDK sysroot)
-        run: mobile/android/build-zig-libs.sh
 
       - name: Set up Gradle 8.7 (AGP 8.5-compatible)
         uses: gradle/actions/setup-gradle@v4

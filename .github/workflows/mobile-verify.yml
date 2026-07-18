@@ -155,18 +155,19 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Install the pinned NDK
-        # Match build-zig-libs.sh + the mobile-android BUILD leg's NDK exactly so
-        # the staged Zig static lib links against the same bionic sysroot.
+        # Match the mobile-android BUILD leg's NDK exactly so the Gradle-built
+        # Zig static lib links against the same bionic sysroot (Gradle resolves
+        # this NDK via ndkVersion for its `buildZigLibs` step).
         run: |
           sdkmanager --install "ndk;26.3.11579264" "cmake;3.22.1"
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/26.3.11579264" >> "$GITHUB_ENV"
 
       - name: Set up Zig
         # Empty version => resolved from build.zig.zon's minimum_zig_version.
+        # The Gradle build cross-compiles the Zig static lib itself (the
+        # `buildZigLibs` task the native build depends on), so no out-of-band
+        # build-zig-libs.sh run — Zig just needs to be on PATH.
         uses: mlugg/setup-zig@v2
-
-      - name: Cross-compile the wezig Zig static libs for both ABIs (NDK sysroot)
-        run: mobile/android/build-zig-libs.sh
 
       - name: Set up Gradle 8.7 (AGP 8.5-compatible)
         uses: gradle/actions/setup-gradle@v4

@@ -36,12 +36,22 @@ typedef struct {
     bool (*canGoBack)(void *ctx);
     bool (*canGoForward)(void *ctx);
     void *(*view)(void *ctx);
+    // Delete a JNI global-ref previously minted by `view` (DeleteGlobalRef).
+    // Called EXACTLY ONCE on teardown, on the one cached view ref (ADR-0009
+    // hazard). Mirror of the Zig `CJavaBridge.deleteView` — field order MUST
+    // match: it sits between `view` and `setViewportSize`.
+    void (*deleteView)(void *ctx, void *view);
     void (*setViewportSize)(void *ctx, int width, int height);
     // The two web3 hooks (spec stories 8,9).
     void (*injectUserScript)(void *ctx, const char *source);
     void (*setScriptMessageHandler)(void *ctx, const char *name);
     void (*evaluateScript)(void *ctx, const char *source);
     void (*registerScheme)(void *ctx, const char *scheme);
+    // Free this bridge's own native side (the per-renderer `JavaCtx`: cached
+    // JavaVM + the controller global-ref). Called EXACTLY ONCE on teardown,
+    // AFTER `deleteView`, so no per-renderer JNI state outlives the backend
+    // (ADR-0009 hazard). Mirror of the Zig `CJavaBridge.teardown` — LAST field.
+    void (*teardown)(void *ctx);
 } WezigCJavaBridge;
 
 // A C lifecycle observer the seam calls back with `.load_changed` + `.title_changed`
@@ -169,6 +179,32 @@ static void *bridge_view(void *ctx) {
     return handle;
 }
 
+// Delete a JNI global-ref previously minted by `bridge_view` (the backend caches
+// exactly one per view and hands it back here on teardown). Runs on the UI
+// thread (teardown is host-driven). `view` is the same global-ref bridge_view
+// returned; DeleteGlobalRef releases it so the net live-ref count returns to
+// zero (ADR-0009 hazard: the spike leaked a ref per `view()` call).
+static void bridge_delete_view(void *ctx, void *view) {
+    JavaCtx *jc = (JavaCtx *)ctx;
+    if (!view) return;
+    JNIEnv *env = attach_env(jc);
+    (*env)->DeleteGlobalRef(env, (jobject)view);
+}
+
+// Free this renderer's own native context (the per-renderer `JavaCtx`: the
+// cached JavaVM + the global-ref to the Java controller). Called EXACTLY ONCE on
+// teardown, AFTER bridge_delete_view, so no per-renderer JNI global-ref outlives
+// the backend (ADR-0009 hazard: the spike's `wezig_android_renderer_deinit` only
+// freed the Zig adapter, leaking this ctx). The renderer-side analogue of the
+// embedding shim's `EmbedCtx` free.
+static void bridge_teardown(void *ctx) {
+    JavaCtx *jc = (JavaCtx *)ctx;
+    if (!jc) return;
+    JNIEnv *env = attach_env(jc);
+    if (jc->controller) (*env)->DeleteGlobalRef(env, jc->controller);
+    free(jc);
+}
+
 static void bridge_set_viewport(void *ctx, int width, int height) {
     JavaCtx *jc = (JavaCtx *)ctx;
     JNIEnv *env = attach_env(jc);
@@ -229,14 +265,29 @@ Java_dev_wighawag_wezig_WezigWebViewController_nativeCreate(
         .canGoBack = bridge_can_go_back,
         .canGoForward = bridge_can_go_forward,
         .view = bridge_view,
+        .deleteView = bridge_delete_view,
         .setViewportSize = bridge_set_viewport,
         .injectUserScript = bridge_inject_user_script,
         .setScriptMessageHandler = bridge_set_script_message_handler,
         .evaluateScript = bridge_evaluate_script,
         .registerScheme = bridge_register_scheme,
+        .teardown = bridge_teardown,
     };
     void *handle = wezig_android_renderer_init(&bridge);
     return (jlong)(intptr_t)handle;
+}
+
+// Tear down the renderer: `wezig_android_renderer_deinit` runs the backend
+// teardown (deleting the one cached view global-ref via `bridge_delete_view`,
+// then freeing this renderer's `JavaCtx` via `bridge_teardown`) BEFORE freeing
+// the Zig adapter, so no JNI global-ref (view ref + renderer `JavaCtx`) outlives
+// the backend (ADR-0009 leak fixes wired here from the backend task).
+JNIEXPORT void JNICALL
+Java_dev_wighawag_wezig_WezigWebViewController_nativeDestroy(
+    JNIEnv *env, jclass clazz, jlong handle) {
+    (void)env;
+    (void)clazz;
+    wezig_android_renderer_deinit((void *)(intptr_t)handle);
 }
 
 // --- Seam lifecycle observer -> Java (the instrumented test's sink) ---------

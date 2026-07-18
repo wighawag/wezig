@@ -144,6 +144,17 @@ public final class WezigWebViewController {
     }
 
     /**
+     * Tear down the native renderer: runs the backend teardown (deletes the one
+     * cached view global-ref via the bridge's `deleteView`, then frees the shim's
+     * per-renderer `JavaCtx` via `teardown` — the ADR-0009 leak fixes) and frees
+     * the Zig adapter. Call ONCE on shutdown, on the UI thread, after the view is
+     * detached. Leaves no leaked JNI global-ref (view ref + renderer `JavaCtx`).
+     */
+    public void destroy() {
+        nativeDestroy(nativeHandle);
+    }
+
+    /**
      * A subscriber to the seam's `.load_changed` lifecycle events, delivered
      * THROUGH the Zig `Renderer` seam (not observed off the WebView directly).
      * `code` is the raw `AndroidLoadEvent` (0=started,1=committed,2=finished,
@@ -381,6 +392,8 @@ public final class WezigWebViewController {
     // which forwards to android_renderer.zig's `wezig_android_on_*` export fns.
 
     private static native long nativeCreate(WezigWebViewController controller);
+
+    private static native void nativeDestroy(long handle);
 
     private static native void nativeOnLoadState(long handle, int code, String uri);
 

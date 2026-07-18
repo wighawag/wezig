@@ -1,10 +1,49 @@
-# wezig Android shell (toolchain proof)
+# wezig Android shell
 
-The narrowest-real-case Android shell for the `explore-mobile-shell` exploration
-(task `android-toolchain-ndk-crosslink`, spec Q2/stories 1,3): a minimal Gradle
-project that cross-links the wezig Zig **static library** (including its
-`stb_truetype` C dep) against the **NDK sysroot** for both ABIs, packages it into
-an APK via a JNI shim, and shows one `android.webkit.WebView`.
+A REAL, minimal Android browser app module for the mobile-shell build (spec
+`build-mobile-shell`, stories 2/3/4/5/6): a Gradle project that cross-links the
+wezig Zig **static library** (including its `stb_truetype` C dep) against the
+**NDK sysroot** for both ABIs **as a normal Gradle step**, packages it into an
+APK via a JNI shim, and hosts an `Activity` with a **URL field + back/forward
+toolbar** over the WebView-backed `Renderer` + the mobile `ChromeSurface`, driven
+by the shared mobile chrome (`MobileChrome`). Navigation goes THROUGH the seams;
+a background→foreground round-trip preserves the page (host-only, ADR-0010).
+
+> Started life as the narrowest-real-case toolchain proof (task
+> `android-toolchain-ndk-crosslink`, spec `explore-mobile-shell` Q2/stories 1,3):
+> the Zig cross-link + one `WebView`. The mobile-shell build turned that spike
+> into the real app module described here.
+
+## The real app shell (spec `build-mobile-shell`, stories 2/3/4/5/6)
+
+- **`MainActivity`** hosts a **`WezigShellController`** (the chrome-surface
+  HOST): it lays out a URL field + ◀ ▶ ⟳ toolbar over a content container, owns
+  the WebView-backed `Renderer` (`WezigWebViewController`), and constructs the
+  shared `MobileChrome` over the `Renderer` + `MobileChromeSurface` seams via the
+  shell JNI shim (`wezig_shell_jni.c`) → `src/android_shell.zig`
+  (`wezig_android_shell_*`).
+- **User intents** (URL submit / Back / Forward / Reload) fire a `ChromeIntent`
+  INTO the surface THROUGH the shell C-ABI — never a raw `WebView` call above the
+  backend. **Lifecycle events** (`WebViewClient` callbacks, marshalled onto the
+  UI thread) re-enter the backend and the shared chrome reflects them into the
+  URL field + Back/Forward enabled-state (story 5).
+- **Background→foreground state restoration is HOST-ONLY** (ADR-0010): the
+  Activity's `onSaveInstanceState`/`onRestoreInstanceState` drive
+  `WebView.saveState`/`restoreState`; NO `Renderer` seam method is added.
+- **Proof:** the instrumented `ShellSeamTest` (browse one page through the seams,
+  URL reflects, back/forward enable, background→foreground preserves the page,
+  clean teardown) run on the x86_64-emulator leg; the headless shell-wiring
+  contract is in `src/android_shell.zig`'s `zig build test` tests.
+
+## The Zig static lib is built as a NORMAL Gradle step (criterion 4)
+
+`gradle assembleDebug` cross-compiles the Zig static lib itself: the
+`buildZigLibs` task in `app/build.gradle` derives the NDK sysroot + per-ABI Zig
+target triple and runs `zig build android-lib` for each ABI into
+`app/.cxx-zig/<abi>/`, and the native (CMake) build depends on it. So a plain
+`gradle assembleDebug` builds everything — no out-of-band `build-zig-libs.sh`
+run. `build-zig-libs.sh` is kept only as a standalone convenience (its logic is
+mirrored by the Gradle task); the CI legs run the Gradle build directly.
 
 ## What this proves (and what it does NOT)
 
@@ -98,6 +137,21 @@ queue); it is Android-specific and load-bearing for the web3-hooks task
   by the opaque contract for the navigate-one-page case; the
   embedding-proof task (`mobile-viewhandle-embedding-proof`) exercises hosting
   — CONFIRMED sufficient (see "The ViewHandle-embedding proof" below).
+- **JNI global-ref lifecycle is now wired to ZERO leaks on teardown** (ADR-0009
+  hazard; the `mobile/android/**`-side half deferred by
+  `android-renderer-reinject-and-globalref-fix` and landed in the shell build):
+  the Zig `CJavaBridge` gained `deleteView` (`DeleteGlobalRef` of the one cached
+  view ref) + `teardown` (free the renderer's `JavaCtx`), which the C
+  `WezigCJavaBridge` in `wezig_renderer_jni.c` now MIRRORS IN THE SAME FIELD
+  ORDER (implemented by `bridge_delete_view`/`bridge_teardown`); and
+  `wezig_embedding_jni.c`'s `nativeDestroySurface` now frees the `EmbedCtx`
+  global-ref instead of leaking it. `WezigWebViewController.destroy()` (via
+  `nativeDestroy` → `wezig_android_renderer_deinit`) drives the renderer
+  teardown; `WezigShellController.destroy()` frees the shell ctx too. Net: no
+  leaked JNI global-ref (view ref + renderer `JavaCtx` + `EmbedCtx`) after
+  teardown. The one-ref-per-view + zero-after-teardown contract is proven
+  headlessly in `src/android_renderer.zig`; the real `DeleteGlobalRef` path is
+  exercised by `ShellSeamTest`'s teardown on the emulator leg.
 - **Down-calls behind a `JavaBridge` fn-pointer table** (not a hard `@extern`
   to the shim): this is what lets the backend be driven by a FAKE bridge in
   `zig build test`, mirroring `FakeRenderer`. Alternative (direct extern) was
@@ -251,7 +305,18 @@ and fed to `explore-web3-capabilities` + ADR-0005/0007.
   (Zig↔Java, both directions) for the story-5 seam proof.
 - `app/src/main/cpp/wezig_embedding_jni.c` — the chrome-surface embedding JNI
   bridge (spec Q3/story 6): downcasts the opaque `ViewHandle` and calls
-  `doEmbedView`.
+  `doEmbedView`; frees the `EmbedCtx` global-ref on `nativeDestroySurface`.
+- `app/src/main/cpp/wezig_shell_jni.c` — the REAL-app shell JNI bridge (spec
+  `build-mobile-shell`): builds the `CEmbedPlatform` over the Java
+  `WezigShellController` and calls the Zig shell C-ABI
+  (`wezig_android_shell_start`/`_navigate`/`_go_back`/`_go_forward`/`_reload`).
+- `app/src/main/java/.../WezigShellController.java` — the shell chrome-surface
+  HOST: URL field + back/forward toolbar + content container over the
+  WebView-backed renderer; drives navigation THROUGH the shell C-ABI; wires
+  `WebView.saveState`/`restoreState` for host-only lifecycle restoration.
+- `app/src/androidTest/java/.../ShellSeamTest.java` — the instrumented real-app
+  assertion (browse through the seams + URL/back-forward reflection +
+  background→foreground round-trip + clean teardown).
 - `app/src/main/java/.../WezigEmbeddingController.java` — the Android
   chrome-surface embedding host (owns the container, implements `doEmbedView`).
 - `app/src/androidTest/java/.../EmbeddingProofTest.java` — the instrumented
@@ -269,9 +334,11 @@ and fed to `explore-web3-capabilities` + ADR-0005/0007.
   the mobile analogue of the desktop `shell-scheme-test` (spec story 9).
 - `app/src/main/cpp/CMakeLists.txt` — links the prebuilt Zig static lib (per ABI)
   into `libwezigshell.so`.
-- `app/src/main/java/dev/wighawag/wezig/MainActivity.java` — loads the lib and
-  shows one `WebView` with HTML embedding the Zig greeting.
-- `build-zig-libs.sh` — cross-compiles the Zig static lib for both ABIs into the
-  per-ABI `jniLibs`-adjacent staging dir the CMake build reads.
+- `app/src/main/java/dev/wighawag/wezig/MainActivity.java` — the app entry point:
+  hosts the `WezigShellController` and wires `onSaveInstanceState`/
+  `onRestoreInstanceState` for host-only background→foreground state restoration.
+- `build-zig-libs.sh` — SUPERSEDED by the `buildZigLibs` Gradle task (kept as a
+  standalone convenience): cross-compiles the Zig static lib for both ABIs into
+  the per-ABI staging dir the CMake build reads.
 - `build.gradle` / `settings.gradle` / `app/build.gradle` — the minimal Gradle
   project (NDK + CMake externalNativeBuild).

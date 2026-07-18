@@ -99,6 +99,13 @@ static void embed_set_forward_enabled(void *host, bool enabled) {
     (void)enabled;
 }
 
+// The live embed ctx (the seam hosts one surface at a time — the same
+// single-instance discipline the renderer shim's `g_*_observer_ctx` use), so
+// `nativeDestroySurface` can free the `EmbedCtx` global-ref + heap on teardown
+// instead of leaking it (the ADR-0009 `EmbedCtx` leak fix, deferred here from
+// the backend task's `android-renderer-reinject-and-globalref-fix`).
+static EmbedCtx *g_embed_ctx = NULL;
+
 // --- Java -> Zig: construct the chrome-surface + drive one embed -------------
 
 /*
@@ -128,6 +135,14 @@ Java_dev_wighawag_wezig_WezigEmbeddingController_nativeCreateSurface(
         free(ec);
         return 0;
     }
+    // Track the ctx so teardown can release its global-ref + heap (one surface
+    // at a time). If a prior surface was never destroyed, free it now so we do
+    // not leak the earlier ctx by overwriting the tracker.
+    if (g_embed_ctx) {
+        (*env)->DeleteGlobalRef(env, g_embed_ctx->controller);
+        free(g_embed_ctx);
+    }
+    g_embed_ctx = ec;
     return (jlong)(intptr_t)handle;
 }
 
@@ -137,9 +152,17 @@ Java_dev_wighawag_wezig_WezigEmbeddingController_nativeDestroySurface(
     (void)env;
     (void)clazz;
     wezig_android_chrome_surface_deinit((void *)(intptr_t)surfaceHandle);
-    // The EmbedCtx global-ref is intentionally leaked with the process here (the
-    // proof runs once); a full app would track + free it. Kept minimal for the
-    // narrowest-case spike, matching the toolchain shells.
+    // Free the `EmbedCtx`: DeleteGlobalRef its controller ref + free the heap, so
+    // zero JNI global-refs outlive teardown (ADR-0009 hazard; the literal
+    // `EmbedCtx` free deferred to this task from the backend's global-ref fix).
+    // The Zig `CAndroidSurface` (which held `ec` as its `EmbedPlatform.host`) is
+    // already freed by `..._deinit` above; `g_embed_ctx` is the shim-side tracker
+    // so we can still reach the ctx here.
+    if (g_embed_ctx) {
+        (*env)->DeleteGlobalRef(env, g_embed_ctx->controller);
+        free(g_embed_ctx);
+        g_embed_ctx = NULL;
+    }
 }
 
 /*

@@ -75,10 +75,10 @@ jobs:
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/26.3.11579264" >> "$GITHUB_ENV"
 
       - name: Set up Zig
+        # The Gradle build cross-compiles the Zig static lib itself (the
+        # `buildZigLibs` task the native build depends on), so no out-of-band
+        # build-zig-libs.sh run — Zig just needs to be on PATH.
         uses: mlugg/setup-zig@v2
-
-      - name: Cross-compile the wezig Zig static libs for both ABIs (NDK sysroot)
-        run: mobile/android/build-zig-libs.sh
 
       - name: Set up Gradle 8.7
         uses: gradle/actions/setup-gradle@v4

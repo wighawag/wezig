@@ -2,10 +2,98 @@ plugins {
     id 'com.android.application'
 }
 
-// The wezig core (Zig static lib) is cross-compiled OUTSIDE Gradle by
-// build-zig-libs.sh into a per-ABI staging dir under app/.cxx-zig/<abi>/. The
-// CMake externalNativeBuild imports that .a per ABI via WEZIG_ZIG_LIB_DIR.
+// The wezig core (Zig static lib) is cross-compiled as a NORMAL Gradle step
+// (the `buildZigLibs` task below, spec build-mobile-shell criterion 4 — no
+// bespoke out-of-band shell script), into a per-ABI staging dir under
+// app/.cxx-zig/<abi>/. The CMake externalNativeBuild imports that .a per ABI via
+// WEZIG_ZIG_STAGE_DIR. `buildZigLibs` folds build-zig-libs.sh's logic into
+// Gradle: it derives the NDK sysroot + per-ABI Zig target triple and invokes
+// `zig build android-lib` for each ABI, and the native build depends on it.
 def zigStageDir = new File(projectDir, ".cxx-zig")
+def repoRoot = projectDir.parentFile.parentFile.parentFile // mobile/android/app -> repo root
+
+// Map Android ABI -> Zig target triple (the spec floor ABIs).
+def zigAbiTriples = [
+    'arm64-v8a': 'aarch64-linux-android',
+    'x86_64'   : 'x86_64-linux-android',
+]
+def zigApiLevel = 26 // Android API floor (spec)
+
+// Locate the NDK sysroot the Zig stb C dep needs (bionic libc headers), from the
+// NDK Gradle resolves for this module. Returns null if the NDK is not yet known
+// at configuration time (the task then resolves it lazily at execution).
+def ndkSysrootFor = { ndkDir ->
+    if (ndkDir == null) return null
+    def prebuilt = new File(ndkDir, "toolchains/llvm/prebuilt")
+    def hosts = prebuilt.exists() ? prebuilt.listFiles({ f -> f.isDirectory() } as FileFilter) : null
+    if (!hosts || hosts.length == 0) return null
+    return new File(hosts[0], "sysroot")
+}
+
+// The shared C-ABI header lives with the iOS shell; the NDK build reads it next
+// to the JNI shim, so copy it in as part of the Zig build step (as build-zig-libs.sh did).
+def sharedHeaderSrc = new File(repoRoot, "mobile/ios/Sources/wezig_mobile.h")
+def sharedHeaderDst = new File(projectDir, "src/main/cpp/wezig_mobile.h")
+
+tasks.register('buildZigLibs') {
+    group = 'build'
+    description = 'Cross-compile the wezig Zig static lib for each Android ABI (folds build-zig-libs.sh into Gradle).'
+    // Re-run if the Zig sources or this recipe change; outputs are the staged .a per ABI.
+    inputs.dir(new File(repoRoot, 'src'))
+    inputs.file(new File(repoRoot, 'build.zig'))
+    inputs.file(sharedHeaderSrc)
+    zigAbiTriples.each { abi, triple ->
+        outputs.file(new File(zigStageDir, "${abi}/libwezig_mobile.a"))
+    }
+    doLast {
+        // Resolve the NDK Gradle picked for this module (respects ndkVersion).
+        def ndkDir = android.ndkDirectory
+        def sysroot = ndkSysrootFor(ndkDir)
+        if (sysroot == null || !new File(sysroot, 'usr/include/math.h').exists()) {
+            throw new GradleException(
+                "wezig: could not locate the NDK sysroot (looked under ${ndkDir}); " +
+                "ensure the pinned NDK (ndkVersion) is installed.")
+        }
+        def zig = System.getenv('ZIG') ?: 'zig'
+        // Make the shared C-ABI header visible to the NDK build (as build-zig-libs.sh did).
+        sharedHeaderDst.parentFile.mkdirs()
+        sharedHeaderDst.bytes = sharedHeaderSrc.bytes
+        zigAbiTriples.each { abi, triple ->
+            def outDir = new File(zigStageDir, abi)
+            outDir.mkdirs()
+            logger.lifecycle("wezig: building Zig static lib for ${abi} (${triple}.${zigApiLevel})")
+            exec {
+                workingDir repoRoot
+                commandLine zig, 'build', 'android-lib',
+                    "-Dmobile-target=${triple}.${zigApiLevel}",
+                    "-Dmobile-sysroot=${sysroot}",
+                    "-Dmobile-sysroot-arch-include=${triple}"
+            }
+            def built = new File(repoRoot, 'zig-out/lib/libwezig_mobile.a')
+            if (!built.exists()) {
+                throw new GradleException("wezig: expected ${built} after 'zig build android-lib' for ${abi}")
+            }
+            new File(outDir, 'libwezig_mobile.a').bytes = built.bytes
+        }
+    }
+}
+
+// The native (CMake) build reads the staged .a per ABI, so it must run AFTER the
+// Zig cross-compile. Hook `buildZigLibs` before the native build tasks AGP
+// generates — matched by NAME (stable across AGP versions, unlike the internal
+// task classes): the per-ABI CMake JSON-model configure tasks
+// (`externalNativeBuild*`, `generateJsonModel*`, `configureCMake*`) and
+// `preBuild`. `configureEach` keeps this lazy (no eager task realization).
+tasks.configureEach { task ->
+    def n = task.name
+    if (n == 'preBuild'
+        || n.startsWith('externalNativeBuild')
+        || n.startsWith('generateJsonModel')
+        || n.startsWith('configureCMake')
+        || n.startsWith('buildCMake')) {
+        task.dependsOn 'buildZigLibs'
+    }
+}
 
 android {
     namespace 'dev.wighawag.wezig'
