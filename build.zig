@@ -258,7 +258,6 @@ pub fn build(b: *std.Build) void {
     );
     const MobileLib = struct {
         b: *std.Build,
-        optimize: std.builtin.OptimizeMode,
         mobile_target_str: ?[]const u8,
         mobile_sysroot: ?[]const u8,
         mobile_sysroot_arch_include: ?[]const u8,
@@ -271,10 +270,19 @@ pub fn build(b: *std.Build) void {
             // The mobile lib re-imports the library sources at the mobile target
             // (NOT the desktop `mod`, which is resolved for the host). It links
             // libc for stb_truetype and vendors stb, exactly like `mod`.
+            //
+            // Force ReleaseSafe (NOT the desktop `optimize`, which defaults to
+            // Debug): a Debug build pulls in Zig's stack-unwinding/`SelfInfo`
+            // symbolication, which references host-runtime symbols the mobile
+            // link cannot resolve statically — `__dyld_get_image_header_...` on
+            // iOS (dyld) and `__tls_get_addr` on x86_64 Android. ReleaseSafe keeps
+            // safety checks but drops that debug machinery, so the static archive
+            // stays self-contained across all mobile targets (and is the right
+            // mode for a shipped mobile core anyway).
             const lib_mod = self.b.createModule(.{
                 .root_source_file = self.b.path("src/root.zig"),
                 .target = resolved,
-                .optimize = self.optimize,
+                .optimize = .ReleaseSafe,
             });
             lib_mod.addIncludePath(self.b.path("src/vendor"));
             // Disable UBSan on the vendored C source for mobile: Zig's default
@@ -314,7 +322,7 @@ pub fn build(b: *std.Build) void {
             step.dependOn(&install.step);
         }
     };
-    const mobile_lib = MobileLib{ .b = b, .optimize = optimize, .mobile_target_str = mobile_target_str, .mobile_sysroot = mobile_sysroot, .mobile_sysroot_arch_include = mobile_sysroot_arch_include };
+    const mobile_lib = MobileLib{ .b = b, .mobile_target_str = mobile_target_str, .mobile_sysroot = mobile_sysroot, .mobile_sysroot_arch_include = mobile_sysroot_arch_include };
     mobile_lib.make("ios-lib", "Cross-compile the wezig mobile static lib for iOS (-Dmobile-target, default aarch64-ios-simulator)", "aarch64-ios-simulator");
     mobile_lib.make("android-lib", "Cross-compile the wezig mobile static lib for Android (-Dmobile-target, default aarch64-linux-android)", "aarch64-linux-android");
 
