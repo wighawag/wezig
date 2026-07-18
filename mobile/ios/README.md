@@ -28,17 +28,50 @@ launched on the iOS **Simulator** via `xcrun simctl`.
   not bundle. The build points Zig's C compile at the SDK sysroot via
   `zig build ios-lib -Dmobile-target=aarch64-ios-simulator -Dmobile-sysroot="$(xcrun --sdk iphonesimulator --show-sdk-path)"`.
 
+## The Renderer-backend proof (task `ios-renderer-backend-oneshot`, story 4)
+
+On top of the toolchain shell, a second proof drives ONE real page THROUGH the
+pinned `Renderer` seam over a `WKWebView` — the iOS twin of the desktop
+`zig build shell-test`. It asserts the three story-4 facts: navigate + a
+`.finished` lifecycle event reaching a seam subscriber + a non-blank
+`WKWebView.takeSnapshot`.
+
+- **The backend is Zig** (`src/ios_webview_renderer.zig`, `IosWebviewRenderer`):
+  it satisfies the SAME pinned `Renderer` VTable the desktop `SystemWebviewRenderer`
+  does. Because the pinned iOS toolchain has Swift own the `WKWebView` and Zig own
+  the core over a C-ABI, this backend reaches the webview through a **C-ABI
+  ops-table** (`WkPlatform`) the Swift shell installs, and the `WKNavigationDelegate`
+  callbacks flow back into it (mapped to the seam's `LifecycleEvent`s). `view()`
+  returns the `WKWebView`'s `UIView*` as the opaque `ViewHandle` (the Q3 decision).
+- **`Sources/RendererProof.swift` is the ONLY WKWebView/UIKit toucher** for the
+  backend: it owns the `WKWebView` + delegate, builds the ops table, relays the
+  nav-delegate callbacks into the seam, and does the platform-only snapshot scan.
+  Everything above the seam stays backend-agnostic.
+- The seam-CONTRACT tests (the backend maps a nav-delegate sequence to a
+  `.finished` seam event, headless, no WKWebView) run in `zig build test`; the
+  REAL end-to-end proof runs on the `ios-renderer-proof` CI leg on a macos-14
+  iOS 17 Simulator (kept OUT of `zig build test`, per spec Q6 / ADR-0007).
+
 ## Layout
 
-- `Sources/main.swift` — the app: a `UIApplicationDelegate` whose root
-  `UIViewController` hosts one `WKWebView`, plus a call into the Zig C-ABI to
+- `Sources/main.swift` — the toolchain shell app: a `UIApplicationDelegate` whose
+  root `UIViewController` hosts one `WKWebView`, plus a call into the Zig C-ABI to
   prove linkage (logged + shown in the loaded HTML).
-- `Sources/wezig_mobile.h` — the C-ABI header exposing the Zig `export fn`s;
-  imported into Swift via `-import-objc-header` (a bridging header).
-- `Info.plist` — the app bundle's Info.plist (bundle id, launch, orientations).
-- `build-and-run.sh` — the CI/local driver: cross-compile the Zig static lib,
-  compile Swift against the simulator SDK, assemble the `.app`, then
+- `Sources/RendererProof.swift` — the Renderer-backend proof app (story 4): owns
+  the `WKWebView` + `WKNavigationDelegate`, drives one page through the pinned
+  seam via the Zig backend, and asserts finished + non-blank snapshot. The sole
+  WKWebView toucher for the backend.
+- `Sources/wezig_mobile.h` — the C-ABI header exposing the Zig `export fn`s (the
+  mobile ABI + the Renderer-proof thunks); imported into Swift via
+  `-import-objc-header` (a bridging header).
+- `Info.plist` — the app bundle's Info.plist (bundle id, launch, orientations);
+  the proof reuses it with the executable/bundle-id rewritten.
+- `build-and-run.sh` — the toolchain-shell CI/local driver: cross-compile the Zig
+  static lib, compile Swift against the simulator SDK, assemble the `.app`, then
   boot → install → launch on an iOS 17 Simulator via `simctl`.
+- `renderer-proof.sh` — the Renderer-backend proof driver: same build shape, but
+  launches `RendererProof.swift` and asserts the seam PASS line (navigate +
+  finished + non-blank snapshot).
 
 The `.app` is assembled by hand (swiftc + a bundle layout) rather than via a
 committed `.xcodeproj`, so the proof is a single reproducible script with no

@@ -71,6 +71,13 @@ pub const chrome_conformance = @import("chrome_conformance.zig");
 /// WebKitGTK/GTK shell seams into the mobile build.
 pub const mobile_abi = @import("mobile_abi.zig");
 
+/// The iOS `Renderer` backend (ADR-0005/0006): the pinned `Renderer` seam
+/// implemented over a `WKWebView` through a C-ABI ops table the Swift shell
+/// installs. The iOS twin of `SystemWebviewRenderer`; the sole WKWebView toucher
+/// above the FFI. Pure Zig (no WebKit import) so its seam-contract tests run in
+/// the display-free `zig build test` gate.
+pub const ios_webview_renderer = @import("ios_webview_renderer.zig");
+
 // Force the mobile C-ABI `export fn`s to be ANALYSED (and thus emitted) in a
 // NON-test build. Without this, `mobile_abi` is only referenced from the test
 // block below, so a plain `zig build android-lib`/`ios-lib` would garbage-collect
@@ -109,4 +116,5 @@ test {
     _ = toolkit;
     _ = chrome;
     _ = mobile_abi;
+    _ = ios_webview_renderer;
 }

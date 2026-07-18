@@ -10,3 +10,8 @@ zig-pkg/
 # shared C-ABI header copied in for the self-contained NDK build.
 mobile/android/app/.cxx-zig/
 mobile/android/app/src/main/cpp/wezig_mobile.h
+
+# iOS: the hand-assembled .app bundles the simulator build/run scripts produce
+# (build-and-run.sh / renderer-proof.sh); regenerated artifacts, not source.
+mobile/ios/build/
+mobile/ios/build-renderer-proof/
