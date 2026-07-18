@@ -1,7 +1,58 @@
-# wezig iOS shell (toolchain proof)
+# wezig iOS shell
 
-The narrowest-real-case iOS shell for the `explore-mobile-shell` exploration
-(task `ios-toolchain-crosslink`, spec Q2/stories 1,2): a minimal app that links
+The iOS side of the mobile shell (spec `build-mobile-shell`, stories 1/3/4/5/6;
+task `ios-shell-xcode-project`): a REAL, maintainable **Xcode project**
+(`App/WezigShell.xcodeproj`) whose root `UIViewController` hosts the mobile
+`Renderer` (`WKWebView`) + `ChromeSurface` driven by the shared mobile chrome
+(`MobileChrome`), with a URL field + back/forward toolbar and
+background→foreground page-state restoration — the mobile equivalent of the
+desktop `zig build shell` app. The Zig static lib is built as a **normal Xcode
+build phase** (not a bespoke `swiftc` script); Simulator-only + unsigned
+(signing is Slice C).
+
+> **The real app vs the proof harnesses.** `App/` is the real app the CI BUILD
+> leg (`mobile-ios`) and the SHELL verify leg (`mobile-verify` → `ios-shell`)
+> drive, and the release `ios-simulator-app` job packages. The `Sources/*Proof.swift`
+> files remain the narrowest-case exploration SPIKES (renderer / embedding /
+> bridge / scheme), each still built by its own dedicated `*-proof.sh` script +
+> `mobile-verify` leg — they are single-fact proofs, not the app.
+
+## The real app (`App/`)
+
+- `App/WezigShell.xcodeproj` — the Xcode project. A pre-build **"Build Zig static
+  lib" phase** (`App/build-zig-lib.sh`) cross-compiles `libwezig_mobile.a` for
+  the SDK/arch Xcode is building (via `zig build ios-lib`, ReleaseSafe+strip) and
+  the Swift target `-force_load`s it. No signing.
+- `App/Sources/AppDelegate.swift` — the app entry; retains the window +
+  controller for the app's lifetime (host-only lifecycle).
+- `App/Sources/WKWebViewShellController.swift` — the root `UIViewController`: URL
+  field + back/forward toolbar + content container. Constructs the shared mobile
+  chrome over the two seams via `wezig_ios_shell_start` and drives navigation
+  ONLY through the shell C-ABI (the chrome/seams) — never a raw `WKWebView` call.
+  Background→foreground restoration is HOST-ONLY (ADR-0010): the native
+  `WKWebView` state save-restore + the existing navigate op; no seam method added.
+- `App/Sources/WKWebViewBackend.swift` — **the sole `WKWebView`/WebKit toucher**
+  for the app: owns the `WKWebView`, its `WKNavigationDelegate`, the marker-scheme
+  `WKURLSchemeHandler`, and the C-ABI ops tables. Installs the marker scheme
+  handler on the `WKWebViewConfiguration` **BEFORE** the `WKWebView` is created
+  (the iOS ordering constraint — the finding), so the scheme set is threaded into
+  the config at build time even though the shell registers only the trivial
+  `wezig://` marker.
+- `App/Sources/ShellVerify.swift` — the REAL-app self-check the `mobile-verify`
+  `ios-shell` leg drives under `--wezig-verify`: navigate THROUGH the seams + a
+  `.finished` event reaching the chrome + a non-blank snapshot + a
+  background→foreground round-trip that preserves the page (story 4).
+- `App/Info.plist` — the app bundle Info.plist.
+- `mobile/ios/build-and-run.sh` — builds the real project via `xcodebuild`
+  (running the Zig-lib build phase), then boots → installs → launches on an iOS
+  17 Simulator; `BUILD_ONLY=1` stops after the `.app` (the release packaging
+  path). `mobile/ios/shell-verify.sh` builds the same app and runs the
+  `--wezig-verify` self-check.
+
+## The exploration spike proofs (`Sources/`, historical)
+
+The narrowest-real-case exploration proofs for `explore-mobile-shell`
+(`ios-toolchain-crosslink` / story 4 / Q3 / stories 8,9): a minimal app that links
 the wezig Zig **static library** over a C-ABI header and shows one `WKWebView`,
 launched on the iOS **Simulator** via `xcrun simctl`.
 
@@ -91,11 +142,8 @@ has that WebKitGTK and Android do not, surfaced at the seam in
 `work/notes/findings/ios-wkurlschemehandler-registration-ordering-2026-07-18.md`
 and fed to `explore-web3-capabilities` + ADR-0005/0007 (relevant to `ipfs://`).
 
-## Layout
+## Layout (the spike proofs)
 
-- `Sources/main.swift` — the toolchain shell app: a `UIApplicationDelegate` whose
-  root `UIViewController` hosts one `WKWebView`, plus a call into the Zig C-ABI to
-  prove linkage (logged + shown in the loaded HTML).
 - `Sources/RendererProof.swift` — the Renderer-backend proof app (story 4): owns
   the `WKWebView` + `WKNavigationDelegate`, drives one page through the pinned
   seam via the Zig backend, and asserts finished + non-blank snapshot. The sole
@@ -103,11 +151,11 @@ and fed to `explore-web3-capabilities` + ADR-0005/0007 (relevant to `ipfs://`).
 - `Sources/wezig_mobile.h` — the C-ABI header exposing the Zig `export fn`s (the
   mobile ABI + the Renderer-proof thunks); imported into Swift via
   `-import-objc-header` (a bridging header).
-- `Info.plist` — the app bundle's Info.plist (bundle id, launch, orientations);
-  the proof reuses it with the executable/bundle-id rewritten.
-- `build-and-run.sh` — the toolchain-shell CI/local driver: cross-compile the Zig
-  static lib, compile Swift against the simulator SDK, assemble the `.app`, then
-  boot → install → launch on an iOS 17 Simulator via `simctl`.
+- `Info.plist` — the shared spike-proof Info.plist (the proof scripts reuse it
+  with the executable/bundle-id rewritten). The real app uses `App/Info.plist`.
+- `build-and-run.sh` — the REAL-app CI/local driver: `xcodebuild` builds
+  `App/WezigShell.xcodeproj` (running the Zig-lib build phase), then boots →
+  installs → launches on an iOS 17 Simulator via `simctl`.
 - `renderer-proof.sh` — the Renderer-backend proof driver: same build shape, but
   launches `RendererProof.swift` and asserts the seam PASS line (navigate +
   finished + non-blank snapshot).
@@ -119,10 +167,11 @@ and fed to `explore-web3-capabilities` + ADR-0005/0007 (relevant to `ipfs://`).
   from native (handler registered on the config before the webview — the
   ordering constraint).
 
-The `.app` is assembled by hand (swiftc + a bundle layout) rather than via a
-committed `.xcodeproj`, so the proof is a single reproducible script with no
-fragile project file to drift. This is the toolchain-proof shape; a real app
-target can adopt an Xcode project later.
+Each PROOF `.app` is assembled by hand (swiftc + a bundle layout) rather than via
+the committed `.xcodeproj`, so each proof stays a single reproducible script with
+no project file to drift — the toolchain-proof shape. The REAL app now DOES use a
+committed Xcode project (`App/WezigShell.xcodeproj`, above), which builds the Zig
+lib as a normal build phase; the proofs keep their standalone scripts.
 
 ## Verification legs (which workflow runs what, and when)
 

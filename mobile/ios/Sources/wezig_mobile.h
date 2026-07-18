@@ -187,6 +187,80 @@ void wezig_ios_scheme_on_title(void *ctx, const char *title);
  * <title> reached the seam (served + rendered). */
 bool wezig_ios_scheme_proof_passed(void *ctx);
 
+/*
+ * iOS SHELL C-ABI (spec build-mobile-shell, stories 1/3/4/5/6; src/ios_shell.zig).
+ *
+ * The REAL-app entry points the Xcode project's `WKWebViewShellController`
+ * (a `UIViewController`) links against to stand up a minimal browser: construct
+ * the iOS `Renderer` backend + the mobile `ChromeSurface` + the shared
+ * `MobileChrome` over the Swift-owned `WKWebView` + URL-field/back-forward
+ * toolbar, register the trivial marker scheme on the `WKWebViewConfiguration`
+ * BEFORE the webview is created (the iOS ordering constraint), and relay
+ * URL-bar/back-forward intents + `WKNavigationDelegate` lifecycle events THROUGH
+ * the seams. Background/foreground state restoration is HOST-ONLY (ADR-0010):
+ * the native `WKWebView` state save-restore + the existing navigate op, no seam
+ * method added. Keep these declarations in lock-step with `src/ios_shell.zig`.
+ */
+
+/* Construct the iOS Renderer backend + mobile ChromeSurface + shared MobileChrome
+ * over the Swift-owned WKWebView + toolbar. The `registerScheme` op MUST install
+ * the WKURLSchemeHandler on the WKWebViewConfiguration BEFORE the WKWebView is
+ * created (the ordering constraint); this call registers `marker_scheme` and
+ * navigates `start_uri` THROUGH the seams. Returns the opaque shell context. */
+void *wezig_ios_shell_start(
+    void *wk,
+    void *view,
+    wezig_wk_navigate_fn navigate,
+    wezig_wk_action_fn reload,
+    wezig_wk_action_fn stop,
+    wezig_wk_action_fn goBack,
+    wezig_wk_action_fn goForward,
+    wezig_wk_query_fn canGoBack,
+    wezig_wk_query_fn canGoForward,
+    wezig_wk_viewport_fn setViewportSize,
+    wezig_wk_source_fn injectUserScript,
+    wezig_wk_source_fn evaluateScript,
+    void (*setScriptMessageHandler)(void *wk, const char *name),
+    void (*registerScheme)(void *wk, const char *scheme),
+    void *embed_host,
+    wezig_embed_view_fn embedView,
+    wezig_embed_url_fn setUrlText,
+    wezig_embed_enabled_fn setBackEnabled,
+    wezig_embed_enabled_fn setForwardEnabled,
+    const char *marker_scheme,
+    const char *start_uri);
+
+/* Forward a WKNavigationDelegate load-state change to the seam
+ * (0=started,1=committed,2=finished,3=failed; `uri` may be NULL). The chrome
+ * reflects it into the URL field + Back/Forward sensitivity. */
+void wezig_ios_shell_on_load_state(void *ctx, int state, const char *uri);
+
+/* Forward a title change (KVO on WKWebView.title) to the seam. */
+void wezig_ios_shell_on_title(void *ctx, const char *title);
+
+/* Forward a URL change (KVO on WKWebView.URL) to the seam; the chrome mirrors it
+ * into the URL field so the field reflects the current page. */
+void wezig_ios_shell_on_uri(void *ctx, const char *uri);
+
+/* A URL the user submitted in the URL field: fires a navigate intent THROUGH the
+ * chrome/seams (NOT a raw WKWebView call). */
+void wezig_ios_shell_navigate(void *ctx, const char *uri);
+
+/* Back / Forward / Reload taps: fire the matching intent THROUGH the chrome. */
+void wezig_ios_shell_go_back(void *ctx);
+void wezig_ios_shell_go_forward(void *ctx);
+void wezig_ios_shell_reload(void *ctx);
+
+/* Swift forwards a WKURLSchemeHandler request for the marker scheme here. Sets
+ * *out_body/*out_body_len/*out_content_type to the native-served bytes (borrowed
+ * until the next call) and returns true, or false if no handler is registered. */
+bool wezig_ios_shell_serve_scheme(
+    void *ctx,
+    const char *uri,
+    const unsigned char **out_body,
+    size_t *out_body_len,
+    const char **out_content_type);
+
 #ifdef __cplusplus
 }
 #endif

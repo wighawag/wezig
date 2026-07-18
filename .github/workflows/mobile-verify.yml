@@ -76,6 +76,31 @@ jobs:
         # non-blank snapshot). Same script used locally on a Mac.
         run: mobile/ios/renderer-proof.sh
 
+  # ---- iOS SHELL verify (task ios-shell-xcode-project, spec build-mobile-shell
+  # stories 4/7): drive the REAL Xcode app (mobile/ios/App/WezigShell.xcodeproj)
+  # on an iOS 17 Simulator and assert the mobile-verify facts AGAINST THE
+  # MAINTAINED APP (not the spike harness): navigate one page THROUGH the seams +
+  # a `.finished` lifecycle event reaching the chrome + a non-blank snapshot, PLUS
+  # the NEW story-4 assertion that a background→foreground round-trip preserves
+  # the page. The app self-checks under `--wezig-verify` (ShellVerify.swift),
+  # driving the SAME seams a user does.
+  ios-shell:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Show Xcode + available iOS runtimes
+        run: |
+          xcodebuild -version
+          xcrun simctl list runtimes
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+
+      - name: Browse one page + survive background/foreground in the real app on an iOS 17 Simulator
+        run: mobile/ios/shell-verify.sh
+
   # ---- iOS ViewHandle-embedding proof (task mobile-viewhandle-embedding-proof,
   # Q3/story 6): a mobile chrome-surface `embedView`s the renderer's WKWebView
   # view (carried across the seam as the OPAQUE ViewHandle) and the page shows.

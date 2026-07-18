@@ -96,6 +96,17 @@ pub const mobile_chrome_surface = @import("mobile_chrome_surface.zig");
 /// its seam-contract tests run in the display-free `zig build test` gate.
 pub const mobile_chrome = @import("mobile_chrome.zig");
 
+/// The iOS shell C-ABI (ADR-0008/0010; spec `build-mobile-shell`, stories
+/// 1/3/4/5/6): the real-app entry points the Xcode/SwiftPM project's
+/// `UIViewController` links against to construct the `IosWebviewRenderer` +
+/// `MobileChromeSurface` + shared `MobileChrome`, register the trivial marker
+/// scheme at config-build time (the iOS ordering constraint), and relay URL-bar /
+/// back-forward intents + `WKNavigationDelegate` lifecycle events THROUGH the
+/// seams. Pure Zig (no WebKit/UIKit), so its headless wiring tests run in the
+/// display-free `zig build test` gate; the real browse + background/foreground
+/// round-trip is the iOS Simulator leg.
+pub const ios_shell = @import("ios_shell.zig");
+
 // Force the mobile C-ABI `export fn`s to be ANALYSED (and thus emitted) in a
 // NON-test build. Without this, `mobile_abi` is only referenced from the test
 // block below, so a plain `zig build android-lib`/`ios-lib` would garbage-collect
@@ -106,6 +117,7 @@ comptime {
     _ = mobile_abi;
     _ = android_renderer;
     _ = mobile_chrome_surface;
+    _ = ios_shell;
 }
 
 /// Trivial placeholder so `zig build test` has real behaviour to assert on.
@@ -138,4 +150,5 @@ test {
     _ = ios_webview_renderer;
     _ = mobile_chrome_surface;
     _ = mobile_chrome;
+    _ = ios_shell;
 }
