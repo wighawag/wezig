@@ -32,6 +32,7 @@ keeping a Zig-native swap-in possible.
 
 ## Acceptance criteria
 
+- [ ] **ADR numbering (coordination — several sibling exploration tasks add ADRs in parallel):** the new ADR's number is chosen by scanning `docs/adr/` for the highest existing number and incrementing (`ADR-FORMAT.md`); if a concurrently-landed sibling task (`pin-conformance-tiers`, `native-renderer-findings-and-build-plan`) already took the next number by the time this lands, RE-NUMBER to the next free one at land-time so no two ADRs share a number. Use an `<NNNN>` placeholder in the branch and resolve it against the current `docs/adr/` at integration — do NOT hardcode `0012` on the assumption it is free.
 - [ ] A `ScriptEngine` seam/interface exists (mirroring the `Renderer`-seam
       reversibility pattern), satisfied by a trivial stub, and the caveat that it
       is a WIDE DOM-coupled boundary is documented at the seam.
@@ -70,8 +71,11 @@ keeping a Zig-native swap-in possible.
 > compatibility engine at the start.
 >
 > Domain vocabulary + framing: `CONTEXT.md`, ADR-0005 (Renderer seam pattern),
-> ADR-0006 (pinned seams), ADR-0011 (controlled-trust surfaces). This is
-> exploration on the narrowest case (story 6): seam + stub + written
+> ADR-0006 (pinned seams), ADR-0011 (controlled-trust surfaces). NOTE: several
+> sibling exploration tasks add ADRs in parallel — choose your ADR number by
+> scanning `docs/adr/` for the highest + incrementing, and re-number to the next
+> free one at land-time if a sibling took it (never hardcode `0012` as free).
+> This is exploration on the narrowest case (story 6): seam + stub + written
 > recommendation; do NOT bind SpiderMonkey/JSC/V8. "Done" = the seam holds with a
 > stub (caveat documented), the ADR states the recommendation + criteria + the
 > kiesel-later position, and the v0 gate stays green.

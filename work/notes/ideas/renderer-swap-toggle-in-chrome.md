@@ -49,15 +49,15 @@ static-page stub).
   existing; `explore-native-renderer` spikes the seam-level swap mechanism
   (re-point the `Renderer` value + re-navigate) on the narrowest case.
 
-## Smallest first step that would make it real (optional spike)
+## Smallest first step that would make it real (now a tasked spike)
 
-`explore-native-renderer` story #3 already is "render one simple static page
-with `WezigRenderer`, everything else via the webview." A minimal version of
-THIS idea rides on that: wire a trivial second `Renderer` (a native stub that
-paints one static page through the existing v0 layout/paint pipeline) behind the
-seam in ONE shell, plus a long-press-reload toggle + an engine indicator — a
-narrowest-case proof of the swap routing + the UX affordance together. That is a
-de-risking spike for question #4, not a product feature.
+`explore-native-renderer` has tasked this exactly: **`spike-native-stub-and-user-swap`**
+(story 4) wires a trivial second `Renderer` (a native stub that paints one static
+page through the existing v0 layout/paint pipeline) behind the seam in ONE shell,
+plus the long-press-reload toggle + an engine indicator + the per-domain-allow
+data model — a narrowest-case proof of the user-controlled swap mechanism + this
+UX affordance together. So this idea's smallest real step is now a claimable task
+in `work/tasks/ready/`, not a hypothetical.
 
 ## Open sub-questions (for whoever picks this up)
 

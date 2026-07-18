@@ -41,7 +41,11 @@ Synthesize from the six tasks:
       ScriptEngine seam + engine recommendation) and any seam gaps the spikes
       revealed.
 - [ ] An ADR records the load-bearing decisions the exploration settled (or points
-      to the per-decision ADRs the spike tasks produced).
+      to the per-decision ADRs the spike tasks produced). **ADR numbering:** choose
+      the number by scanning `docs/adr/` for the highest + incrementing
+      (`ADR-FORMAT.md`); this task is `blockedBy` the ADR-producing pin tasks so it
+      normally lands after them, but still resolve an `<NNNN>` placeholder against
+      the current `docs/adr/` at land-time rather than hardcoding a number.
 - [ ] A de-risked, SLICED BUILD PLAN names the follow-on specs, their order, and
       the target tier for each, so each can be authored + tasked atomically.
 - [ ] Every claim traces to something an earlier task actually observed (no

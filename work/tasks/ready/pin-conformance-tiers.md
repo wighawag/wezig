@@ -29,6 +29,7 @@ Deliver:
 
 ## Acceptance criteria
 
+- [ ] **ADR numbering (coordination — several sibling exploration tasks add ADRs in parallel):** the new ADR's number is chosen by scanning `docs/adr/` for the highest existing number and incrementing (`ADR-FORMAT.md`); if a concurrently-landed sibling task (`pin-scriptengine-seam`, `native-renderer-findings-and-build-plan`) already took the next number by the time this lands, RE-NUMBER to the next free one at land-time so no two ADRs share a number. Use an `<NNNN>` placeholder in the branch and resolve it against the current `docs/adr/` at integration — do NOT hardcode `0012` on the assumption it is free.
 - [ ] An ADR pins the tiered capability ladder (the named tiers, each with a page
       checklist + a WPT-subset bar), anchored on ADR-0011 (general browser, not a
       dapp niche).
@@ -61,7 +62,10 @@ Deliver:
 >
 > Domain vocabulary + framing: `CONTEXT.md`, ADR-0011 (general browser for a
 > post-trusted-server web), ADR-0001 (v0 thin subset behind swappable seams),
-> `docs/v0-subset.md` (this is T0, already done). Ground T0 in the actual v0
+> `docs/v0-subset.md` (this is T0, already done). NOTE: several sibling
+> exploration tasks add ADRs in parallel — choose your ADR number by scanning
+> `docs/adr/` for the highest + incrementing, and re-number to the next free one
+> at land-time if a sibling took it (never hardcode `0012` as free). Ground T0 in the actual v0
 > subset. This is exploration: pin the measurable target so follow-on BUILD specs
 > can aim at named tiers; do NOT implement any tier. "Done" = a reader can, from
 > the ADR + checklist alone, say exactly which pages + WPT bar define each tier.
