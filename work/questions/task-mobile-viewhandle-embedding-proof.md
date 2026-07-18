@@ -29,3 +29,13 @@
 <!-- q3 fields: id=q3 kind=stuck -->
 
 **Your answer** (write below this line):
+
+## Q4
+
+**'task:mobile-viewhandle-embedding-proof' was bounced — how should we proceed?**
+
+> rebase onto origin/main conflicted (aborted, never auto-resolved)
+
+<!-- q4 fields: id=q4 kind=stuck -->
+
+**Your answer** (write below this line):
