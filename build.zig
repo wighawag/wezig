@@ -277,7 +277,16 @@ pub fn build(b: *std.Build) void {
                 .optimize = self.optimize,
             });
             lib_mod.addIncludePath(self.b.path("src/vendor"));
-            lib_mod.addCSourceFile(.{ .file = self.b.path("src/vendor/stb_truetype_impl.c") });
+            // Disable UBSan on the vendored C source for mobile: Zig's default
+            // debug UBSan emits `__ubsan_handle_*` calls whose runtime the iOS
+            // SDK does not ship for static linking (the desktop/Android builds
+            // resolve it, iOS does not). stb_truetype is well-exercised C; the
+            // toolchain proof does not need C UBSan. Keeps the archive
+            // self-contained across all mobile targets.
+            lib_mod.addCSourceFile(.{
+                .file = self.b.path("src/vendor/stb_truetype_impl.c"),
+                .flags = &.{"-fno-sanitize=undefined"},
+            });
             lib_mod.link_libc = true;
             // Point the C compile at the platform SDK's libc headers (math.h),
             // which Zig does not bundle for iOS/Android. `<sysroot>/usr/include`
