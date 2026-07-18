@@ -84,8 +84,16 @@ public final class RendererSeamTest {
 
         // 3. the view is non-blank: snapshot the WebView to a bitmap and assert
         // it has more than one distinct pixel (a blank/failed render is uniform).
+        // Under the emulator's software renderer (swiftshader), the WebView may
+        // not have painted its content into its layer at the instant `.finished`
+        // fires, so poll with a bounded retry rather than a single snapshot.
         final boolean[] nonBlank = new boolean[1];
-        instrumentation.runOnMainSync(() -> nonBlank[0] = isNonBlank(webViewHolder[0]));
+        final long deadline = System.currentTimeMillis() + 3000;
+        do {
+            instrumentation.runOnMainSync(() -> nonBlank[0] = isNonBlank(webViewHolder[0]));
+            if (nonBlank[0]) break;
+            Thread.sleep(100);
+        } while (System.currentTimeMillis() < deadline);
         assertTrue("WebView snapshot was blank (uniform) — page did not render", nonBlank[0]);
     }
 

@@ -129,17 +129,28 @@ public final class ShellSeamTest {
             restored.restoreState(saved);
             restoredHolder[0] = restored;
         });
-        // Give the restored WebView a moment to re-materialise its state.
-        Thread.sleep(1500);
+        // The restored WebView is embedded and carries the page we were on
+        // (restoreState brings back the current URL/history). Restoration is
+        // async on the emulator, so poll restoredView.getUrl() with a bounded
+        // retry until it re-materialises the TYPED page (rather than a single
+        // fixed sleep, which races the software renderer's restore).
         instrumentation.runOnMainSync(() -> {
-            // The restored WebView is embedded and carries the page we were on
-            // (restoreState brings back the current URL/history).
             ViewGroup container = restoredHolder[0].contentContainer();
             assertTrue("restored shell did not embed its WebView", container.getChildCount() >= 1);
-            WebView restoredView = (WebView) container.getChildAt(0);
-            assertEquals("background→foreground round-trip lost the current page",
-                TYPED_PAGE, restoredView.getUrl());
         });
+        final String[] restoredUrl = new String[1];
+        final long restoreDeadline = System.currentTimeMillis() + 8000;
+        do {
+            instrumentation.runOnMainSync(() -> {
+                ViewGroup container = restoredHolder[0].contentContainer();
+                WebView restoredView = (WebView) container.getChildAt(0);
+                restoredUrl[0] = restoredView.getUrl();
+            });
+            if (TYPED_PAGE.equals(restoredUrl[0])) break;
+            Thread.sleep(200);
+        } while (System.currentTimeMillis() < restoreDeadline);
+        assertEquals("background→foreground round-trip lost the current page",
+            TYPED_PAGE, restoredUrl[0]);
 
         // 5. Teardown both shells cleanly (exercises the real DeleteGlobalRef /
         // teardown / EmbedCtx-free path — no leak, no crash).
