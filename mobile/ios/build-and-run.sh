@@ -34,13 +34,22 @@ mkdir -p "$BUILD_DIR"
 # 1. Build the app for the iOS Simulator via the real project. The project's
 #    pre-build "Build Zig static lib" phase cross-compiles libwezig_mobile.a for
 #    the simulator SDK/arch and links it (OTHER_LDFLAGS -force_load); no signing.
-echo "== 1/4 xcodebuild (runs the Zig-lib build phase, then Swift) =="
+# Pin a SINGLE architecture (the runner's native arch) for BOTH the link and the
+# per-arch "Build Zig static lib" phase. Without this, `xcodebuild build` with no
+# `-destination` resolves ARCHS to every simulator arch (arm64 + x86_64 on Apple
+# Silicon) and links x86_64, while the script phase sees CURRENT_ARCH=undefined_arch
+# and builds arm64 — an architecture mismatch (`ld: found architecture 'arm64',
+# required architecture 'x86_64'`). ONLY_ACTIVE_ARCH + an explicit ARCHS forces one
+# arch end-to-end, and makes CURRENT_ARCH concrete for build-zig-lib.sh.
+HOST_ARCH="$(uname -m)"   # arm64 on the Apple-Silicon macos-14 runner
+echo "== 1/4 xcodebuild (runs the Zig-lib build phase, then Swift); arch: $HOST_ARCH =="
 xcodebuild \
   -project "$PROJECT" \
   -scheme "$SCHEME" \
   -configuration Debug \
   -sdk iphonesimulator \
   -derivedDataPath "$DERIVED" \
+  ONLY_ACTIVE_ARCH=YES ARCHS="$HOST_ARCH" \
   CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
   build
 
