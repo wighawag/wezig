@@ -9,3 +9,13 @@
 <!-- q1 fields: id=q1 kind=stuck -->
 
 **Your answer** (write below this line):
+
+## Q2
+
+**'task:ios-renderer-backend-oneshot' was bounced — how should we proceed?**
+
+> acceptance gate failed (exit 127) on the rebased tip
+
+<!-- q2 fields: id=q2 kind=stuck -->
+
+**Your answer** (write below this line):
