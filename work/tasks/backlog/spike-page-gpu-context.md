@@ -2,32 +2,33 @@
 title: Spike the page-facing GPU path (one canvas, one WebGPU frame) + assess WebGL first-class route
 slug: spike-page-gpu-context
 spec: explore-native-renderer
-needsAnswers: true
 blockedBy: []
 covers: [3, 6]
 ---
 
-<!-- open-questions -->
+## Resolved decisions (the two open questions, answered by the human)
 
-## Open questions
-
-1. **What is the ACCEPTANCE bar for the WebGL "first-class, 100% conformance +
-   performant" claim within an EXPLORATION spike?** The spec (decision 2, story 3)
-   demands the spike "prove WebGL can hit full conformance + perf, not hand-wave
-   'it falls out'" — but a narrowest-case one-canvas-one-frame spike CANNOT
-   *prove* 100% WPT/khronos-conformance or performance parity; that is a
-   multi-year build claim. Is the intended deliverable here (a) a one-WebGL-frame
-   spike PLUS a written, evidence-grounded ASSESSMENT that the ANGLE-style
-   GL→native-GPU translation route is viable for full conformance + perf (citing
-   how Chrome/ANGLE does it), i.e. confidence not proof — or (b) something
-   stronger? Confirm the bar so this task promises what a spike can actually
-   deliver rather than an impossible "100% proven" acceptance criterion.
-2. **Which GPU binding is the spike's leaf — Dawn or `wgpu-native`?** ADR-0004
-   leans "Dawn/`wgpu-native`" without picking one. Does this spike pick one (and
-   record why) as part of its output, or is the pick itself deferred to the
-   findings task with the spike run against whichever is faster to stand up?
-
-<!-- /open-questions -->
+1. **The WebGL bar is ASSESSMENT (confidence), NOT in-spike proof — option (a).**
+   The spike CANNOT and MUST NOT claim to "prove WebGL 100% conformant +
+   performant" (that is a multi-year build claim). The deliverable is: **(i) one
+   working WebGL frame** on the native path (alongside the WebGPU frame), **plus
+   (ii) a written, evidence-grounded ASSESSMENT** that the ANGLE-style
+   GL→native-GPU translation route is viable for reaching full WebGL conformance
+   + performance — grounded in how Chrome/ANGLE actually does it (cite the
+   approach), naming the known risks/costs. "First-class, 100% + performant" is
+   the BUILD-time TARGET the assessment argues is reachable via this route; the
+   spike delivers a proven one-frame path + a credible confidence judgment, not
+   an impossible proof. The findings-and-build-plan task inherits this assessment
+   to scope the real WebGL build.
+2. **The spike PICKS one GPU leaf and records why; the pick is not deferred.**
+   Run the spike against whichever of **Dawn** or **`wgpu-native`** is faster to
+   stand up in Zig for a one-frame WebGPU path, and RECORD the concrete pick +
+   the reasoning (build ergonomics in Zig, cross-compile story, WebGPU API
+   currency, maintenance) as part of the output. This is a spike-informed
+   recommendation, not a final pin — the findings task may ratify or revisit it,
+   but the spike must not leave the leaf unchosen (choosing it IS part of
+   de-risking). If the two are genuinely equivalent for the one-frame case, pick
+   the one with the simpler Zig binding and say so.
 
 ## What to build
 
@@ -51,14 +52,19 @@ webview; this spike is about the native path).
 
 ## Acceptance criteria
 
-- [ ] A GPU context via Dawn/`wgpu-native` draws ONE frame from ONE shader into
-      a page-`<canvas>`-facing surface on the native path (not just internal
-      compositing), verified by a test/golden.
-- [ ] The WebGL first-class route is assessed per the resolved bar (open
-      question 1), grounded in how the ANGLE-style GL→native path is known to work.
-- [ ] The findings note records the Dawn-vs-`wgpu-native` disposition and that the
-      webview backend already runs page-GPU content today (the native path is what
-      this de-risks).
+- [ ] A GPU context via the CHOSEN leaf (Dawn or `wgpu-native`, per resolved
+      decision 2) draws ONE **WebGPU** frame from one shader into a
+      page-`<canvas>`-facing surface on the native path (not just internal
+      compositing), verified by a test/golden. A ONE **WebGL** frame is also
+      drawn on the native path (the WebGL leg of resolved decision 1(a)).
+- [ ] The WebGL first-class route is ASSESSED per resolved decision 1(a) — an
+      evidence-grounded written judgment (confidence, NOT in-spike proof) that
+      the ANGLE-style GL→native path can reach full conformance + perf, grounded
+      in how Chrome/ANGLE does it, naming risks/costs. No "100% proven"
+      criterion.
+- [ ] The findings note records the CHOSEN Dawn-vs-`wgpu-native` leaf + why
+      (resolved decision 2) and that the webview backend already runs page-GPU
+      content today (the native path is what this de-risks).
 - [ ] Tests cover the one-frame path per the repo's golden/test style; the v0
       build gate stays green and the display/GPU leg stays out of the display-free
       gate.
