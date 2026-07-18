@@ -58,6 +58,13 @@ cp "$IOS_DIR/Info.plist" "$APP/Info.plist"
 plutil -lint "$APP/Info.plist"
 ls -la "$APP"
 
+# BUILD_ONLY: stop here with the assembled .app (used by the release workflow to
+# package the Simulator app without booting/launching a simulator).
+if [ "${BUILD_ONLY:-0}" = "1" ]; then
+  echo "BUILD_ONLY set: .app assembled at $APP; skipping simulator boot/launch."
+  exit 0
+fi
+
 # 4. Boot an iOS 17 simulator (newest runtime present on the runner).
 echo "== 4/5 boot simulator =="
 RUNTIME="$(xcrun simctl list runtimes | grep -m1 'iOS 17' | grep -oE 'com.apple.CoreSimulator.SimRuntime.iOS-17[^ ]*' || true)"
