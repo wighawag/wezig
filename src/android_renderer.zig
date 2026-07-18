@@ -132,7 +132,15 @@ pub const JavaBridge = struct {
     /// Return the opaque `ViewHandle` for the Java `WebView` — a JNI global ref
     /// (spec Q3: on Android the handle is a JNI reference, not a raw pointer).
     /// Carried opaquely across the seam exactly like the desktop `GtkWidget`.
+    /// NOTE: each call MINTS a fresh JNI global-ref (the shim's `NewGlobalRef`),
+    /// so the backend calls this AT MOST ONCE per view and caches the result
+    /// (see `viewHandle` + `cached_view`); the leak the spike flagged (a ref per
+    /// `view()` call) is fixed by that caching, not by the shim.
     view: *const fn (ctx: *anyopaque) seam.ViewHandle,
+    /// Delete a JNI global-ref previously minted by `view` (the shim's
+    /// `DeleteGlobalRef`). Called EXACTLY ONCE on teardown, on the one cached
+    /// view ref, so the net live-ref count returns to zero (ADR-0009 hazard).
+    deleteView: *const fn (ctx: *anyopaque, view: seam.ViewHandle) void,
     setViewportSize: *const fn (ctx: *anyopaque, width: c_int, height: c_int) void,
 
     // --- the two web3 hooks (ADR-0005; spec stories 8,9) ---
@@ -148,6 +156,12 @@ pub const JavaBridge = struct {
     /// `WebViewClient.shouldInterceptRequest` serves it from native by
     /// up-calling `wezig_android_serve_scheme`.
     registerScheme: *const fn (ctx: *anyopaque, scheme: [*:0]const u8) void,
+    /// Free the bridge's own native side (the JNI shim's per-renderer context:
+    /// its cached `JavaVM` + the global-ref to the Java controller — the
+    /// renderer-side analogue of the embedding shim's leaked `EmbedCtx`).
+    /// Called EXACTLY ONCE on teardown, after `deleteView`, so no native
+    /// per-renderer state outlives the backend (ADR-0009 hazard).
+    teardown: *const fn (ctx: *anyopaque) void,
 };
 
 /// A `Renderer` backed by one Java `android.webkit.WebView` reached over JNI.
@@ -155,15 +169,48 @@ pub const JavaBridge = struct {
 /// hand THAT to the chrome. The chrome never sees the `WebView`; it flows to the
 /// toolkit only as an opaque `ViewHandle` (a JNI global ref to the WebView).
 pub const AndroidWebviewRenderer = struct {
+    /// Upper bound on a re-injectable user script (the marker/provider bridge
+    /// source). Owned IN-STRUCT (no allocator on this backend, matching the
+    /// module's fixed-buffer style, e.g. the scheme/title C-observer buffers) so
+    /// the source survives the `injectUserScript` call to be re-issued on later
+    /// `.started` events — the seam only lends `source` for the call's duration.
+    pub const max_injected_source = 8192;
+
     bridge: JavaBridge,
     cb: ?seam.LifecycleCallback = null,
     /// The single page->native script-message handler (script bridge, ADR-0005).
     msg_cb: ?seam.ScriptMessageCallback = null,
     /// The single custom-scheme handler (request interception, ADR-0005).
     scheme_handler: ?seam.SchemeHandler = null,
+    /// The last `injectUserScript` source, copied into `injected_buf` (owned)
+    /// and re-issued on every `.started` (Resolved decision 2 / ADR-0009 §3:
+    /// Android has no `WKUserScript(.atDocumentStart)`, so ONE caller-side
+    /// `injectUserScript` gets document-start semantics on every page by the
+    /// backend re-injecting on each page start). Null until the first inject.
+    injected_source: ?[:0]const u8 = null,
+    injected_buf: [max_injected_source:0]u8 = undefined,
+    /// The ONE cached JNI global-ref for this view: minted lazily on the first
+    /// `view()` (via the bridge's `view` op) and returned UNCHANGED thereafter,
+    /// so exactly one global-ref lives per view instead of one per call (the
+    /// ADR-0009 hazard). Deleted on teardown via `bridge.deleteView`.
+    cached_view: ?seam.ViewHandle = null,
 
     pub fn init(bridge: JavaBridge) AndroidWebviewRenderer {
         return .{ .bridge = bridge };
+    }
+
+    /// Backend teardown: delete the one cached view global-ref (if minted) and
+    /// free the bridge's native context, so no JNI global-ref outlives the
+    /// backend (ADR-0009 hazard: the per-view ref leak + the leaked native ctx).
+    /// Idempotent w.r.t. the view ref (it is cleared after deletion). The real
+    /// JNI ops (`DeleteGlobalRef` / freeing the shim's `JavaCtx`) live behind the
+    /// bridge; the headless fake bridge models them with its ref counter.
+    pub fn deinit(self: *AndroidWebviewRenderer) void {
+        if (self.cached_view) |v| {
+            self.bridge.deleteView(self.bridge.ctx, v);
+            self.cached_view = null;
+        }
+        self.bridge.teardown(self.bridge.ctx);
     }
 
     pub fn renderer(self: *AndroidWebviewRenderer) seam.Renderer {
@@ -224,8 +271,14 @@ pub const AndroidWebviewRenderer = struct {
         const self: *AndroidWebviewRenderer = @ptrCast(@alignCast(ctx));
         // The interactive view IS the Java WebView; hand its JNI global ref
         // across opaquely (spec Q3). Only the Android toolkit/embedding code
-        // downcasts it back to a WebView reference.
-        return self.bridge.view(self.bridge.ctx);
+        // downcasts it back to a WebView reference. Mint the global-ref LAZILY
+        // on the first call and cache it, returning the SAME ref thereafter, so
+        // exactly one global-ref lives per view (ADR-0009 hazard: the spike
+        // minted a fresh ref — and leaked it — on every `view()` call).
+        if (self.cached_view) |v| return v;
+        const v = self.bridge.view(self.bridge.ctx);
+        self.cached_view = v;
+        return v;
     }
     fn setViewportSize(ctx: *anyopaque, width: c_int, height: c_int) void {
         const self: *AndroidWebviewRenderer = @ptrCast(@alignCast(ctx));
@@ -253,8 +306,24 @@ pub const AndroidWebviewRenderer = struct {
 
     /// A `WebViewClient` load-state callback: map the raw code and re-emit as a
     /// `.load_changed` lifecycle event. `uri` is borrowed for the call.
+    ///
+    /// Document-start re-injection (Resolved decision 2 / ADR-0009 §3): on every
+    /// `.started` this re-issues the last `injectUserScript` source through the
+    /// bridge, so ONE caller-side `injectUserScript` yields document-start
+    /// semantics on every page — keeping the injection contract seam-uniform
+    /// with iOS's `WKUserScript(.atDocumentStart)` and WebKitGTK's
+    /// user-content-manager document-start injection, WITHOUT growing the seam
+    /// or leaking the platform quirk above it. Android's `WebView` has no
+    /// document-start user-script API, so re-issuing on each page start is the
+    /// mechanism. Fires BEFORE the event is emitted so the injected page-world
+    /// object exists before any subscriber reacts to the load starting.
     pub fn dispatchLoadState(self: *AndroidWebviewRenderer, code: c_int, uri: ?[]const u8) void {
         const state = mapLoadState(code) orelse return;
+        if (state == .started) {
+            if (self.injected_source) |source| {
+                self.bridge.injectUserScript(self.bridge.ctx, source.ptr);
+            }
+        }
         self.emit(.{ .load_changed = .{ .state = state, .uri = uri } });
     }
 
@@ -307,6 +376,19 @@ pub const AndroidWebviewRenderer = struct {
 
     fn injectUserScript(ctx: *anyopaque, source: [*:0]const u8) void {
         const self: *AndroidWebviewRenderer = @ptrCast(@alignCast(ctx));
+        // Remember the source (owned copy) so it can be re-issued on each page
+        // start (Resolved decision 2 — see `dispatchLoadState`). A source longer
+        // than `max_injected_source` is still injected now but NOT remembered
+        // (it cannot be re-issued); the marker/provider bridge sources this is
+        // built for are far smaller. Then issue the initial injection.
+        const span = std.mem.span(source);
+        if (span.len <= max_injected_source) {
+            @memcpy(self.injected_buf[0..span.len], span);
+            self.injected_buf[span.len] = 0;
+            self.injected_source = self.injected_buf[0..span.len :0];
+        } else {
+            self.injected_source = null;
+        }
         self.bridge.injectUserScript(self.bridge.ctx, source);
     }
     fn setScriptMessageHandler(ctx: *anyopaque, name: [*:0]const u8, cb: seam.ScriptMessageCallback) void {
@@ -364,12 +446,19 @@ pub const CJavaBridge = extern struct {
     canGoBack: *const fn (ctx: ?*anyopaque) callconv(.c) bool,
     canGoForward: *const fn (ctx: ?*anyopaque) callconv(.c) bool,
     view: *const fn (ctx: ?*anyopaque) callconv(.c) ?*anyopaque,
+    /// Delete a JNI global-ref previously returned by `view` (the shim's
+    /// `DeleteGlobalRef`). Mirror of `JavaBridge.deleteView`; the JNI shim's
+    /// `WezigCJavaBridge` (field order MUST match) gains the same op.
+    deleteView: *const fn (ctx: ?*anyopaque, view: ?*anyopaque) callconv(.c) void,
     setViewportSize: *const fn (ctx: ?*anyopaque, width: c_int, height: c_int) callconv(.c) void,
     // --- the two web3 hooks (ADR-0005; spec stories 8,9) ---
     injectUserScript: *const fn (ctx: ?*anyopaque, source: [*:0]const u8) callconv(.c) void,
     setScriptMessageHandler: *const fn (ctx: ?*anyopaque, name: [*:0]const u8) callconv(.c) void,
     evaluateScript: *const fn (ctx: ?*anyopaque, source: [*:0]const u8) callconv(.c) void,
     registerScheme: *const fn (ctx: ?*anyopaque, scheme: [*:0]const u8) callconv(.c) void,
+    /// Free the shim's per-renderer native context (its `JavaCtx`: the cached
+    /// `JavaVM` + the controller global-ref). Mirror of `JavaBridge.teardown`.
+    teardown: *const fn (ctx: ?*anyopaque) callconv(.c) void,
 };
 
 /// Adapter state stored alongside a renderer created from the C boundary: it
@@ -411,6 +500,14 @@ const CBackend = struct {
         const self: *CBackend = @fieldParentPtr("backend", @as(*AndroidWebviewRenderer, @ptrCast(@alignCast(ctx))));
         return self.cbridge.view(self.cbridge.ctx) orelse undefined;
     }
+    fn deleteView(ctx: *anyopaque, v: seam.ViewHandle) void {
+        const self: *CBackend = @fieldParentPtr("backend", @as(*AndroidWebviewRenderer, @ptrCast(@alignCast(ctx))));
+        self.cbridge.deleteView(self.cbridge.ctx, v);
+    }
+    fn teardown(ctx: *anyopaque) void {
+        const self: *CBackend = @fieldParentPtr("backend", @as(*AndroidWebviewRenderer, @ptrCast(@alignCast(ctx))));
+        self.cbridge.teardown(self.cbridge.ctx);
+    }
     fn setViewportSize(ctx: *anyopaque, width: c_int, height: c_int) void {
         const self: *CBackend = @fieldParentPtr("backend", @as(*AndroidWebviewRenderer, @ptrCast(@alignCast(ctx))));
         self.cbridge.setViewportSize(self.cbridge.ctx, width, height);
@@ -451,19 +548,26 @@ export fn wezig_android_renderer_init(cbridge: *const CJavaBridge) ?*anyopaque {
         .canGoBack = CBackend.canGoBack,
         .canGoForward = CBackend.canGoForward,
         .view = CBackend.view,
+        .deleteView = CBackend.deleteView,
         .setViewportSize = CBackend.setViewportSize,
         .injectUserScript = CBackend.injectUserScript,
         .setScriptMessageHandler = CBackend.setScriptMessageHandler,
         .evaluateScript = CBackend.evaluateScript,
         .registerScheme = CBackend.registerScheme,
+        .teardown = CBackend.teardown,
     });
     // The up-call entry points receive this same handle (the `*AndroidWebviewRenderer`).
     return &cb.backend;
 }
 
 /// C-ABI destructor: free a renderer created by `wezig_android_renderer_init`.
+/// Runs the backend teardown FIRST (deletes the one cached view global-ref via
+/// the bridge's `deleteView`, then frees the shim's native ctx via `teardown` —
+/// the ADR-0009 leak fixes) BEFORE freeing the Zig adapter, so the bridge ops
+/// still see a live `cbridge`/ctx when they run.
 export fn wezig_android_renderer_deinit(handle: ?*anyopaque) void {
     const backend: *AndroidWebviewRenderer = @ptrCast(@alignCast(handle orelse return));
+    backend.deinit();
     const cb: *CBackend = @fieldParentPtr("backend", backend);
     std.heap.c_allocator.destroy(cb);
 }
@@ -773,8 +877,22 @@ const FakeJava = struct {
     last_viewport: ?[2]c_int = null,
     view_token: u8 = 0,
 
+    // --- JNI global-ref lifecycle model (ADR-0009 hazard; the leak counter) ---
+    /// How many times the `view` op minted a global-ref (the real shim's
+    /// `NewGlobalRef`). The backend caches, so a correct backend calls it ONCE
+    /// per view no matter how many `view()` seam calls happen.
+    view_mints: usize = 0,
+    /// Live global-refs = mints minus deletes. Must be exactly 1 while the view
+    /// is held and 0 after teardown (the leak-count assertion).
+    live_view_refs: usize = 0,
+    /// Set once the bridge's `teardown` op ran (the shim's native ctx freed).
+    torn_down: bool = false,
+
     // --- web3-hook down-call state (what the Java bridge installs) ---
     injected: ?[]const u8 = null,
+    /// How many times the `injectUserScript` op fired (initial inject + each
+    /// document-start re-injection on `.started`).
+    inject_count: usize = 0,
     last_evaluated: ?[]const u8 = null,
     msg_channel: ?[]const u8 = null,
     registered_scheme: ?[]const u8 = null,
@@ -790,16 +908,19 @@ const FakeJava = struct {
             .canGoBack = canGoBack,
             .canGoForward = canGoForward,
             .view = view,
+            .deleteView = deleteView,
             .setViewportSize = setViewportSize,
             .injectUserScript = injectUserScript,
             .setScriptMessageHandler = setScriptMessageHandler,
             .evaluateScript = evaluateScript,
             .registerScheme = registerScheme,
+            .teardown = teardown,
         };
     }
     fn injectUserScript(ctx: *anyopaque, source: [*:0]const u8) void {
         const self: *FakeJava = @ptrCast(@alignCast(ctx));
         self.injected = std.mem.span(source);
+        self.inject_count += 1;
     }
     fn setScriptMessageHandler(ctx: *anyopaque, name: [*:0]const u8) void {
         const self: *FakeJava = @ptrCast(@alignCast(ctx));
@@ -843,11 +964,25 @@ const FakeJava = struct {
     }
     fn view(ctx: *anyopaque) seam.ViewHandle {
         const self: *FakeJava = @ptrCast(@alignCast(ctx));
+        // Model the shim's `NewGlobalRef`: each call mints a fresh live ref.
+        self.view_mints += 1;
+        self.live_view_refs += 1;
         return &self.view_token;
+    }
+    fn deleteView(ctx: *anyopaque, v: seam.ViewHandle) void {
+        const self: *FakeJava = @ptrCast(@alignCast(ctx));
+        // Model the shim's `DeleteGlobalRef`: the deleted ref is the one minted
+        // for this view (the backend hands back exactly the cached handle).
+        std.debug.assert(v == @as(seam.ViewHandle, &self.view_token));
+        self.live_view_refs -= 1;
     }
     fn setViewportSize(ctx: *anyopaque, width: c_int, height: c_int) void {
         const self: *FakeJava = @ptrCast(@alignCast(ctx));
         self.last_viewport = .{ width, height };
+    }
+    fn teardown(ctx: *anyopaque) void {
+        const self: *FakeJava = @ptrCast(@alignCast(ctx));
+        self.torn_down = true;
     }
 };
 
@@ -1049,6 +1184,150 @@ test "AndroidWebviewRenderer: a registered custom scheme is served from native" 
     try std.testing.expectEqual(@as(?seam.SchemeResponse, null), bare.serveSchemeRequest("wezig-test://x"));
 }
 
+test "AndroidWebviewRenderer: one injectUserScript re-injects on every .started (document-start seam-uniform)" {
+    // Resolved decision 2 / ADR-0009 §3: Android's WebView has no
+    // `WKUserScript(.atDocumentStart)` equivalent, so ONE caller-side
+    // `injectUserScript` must give document-start semantics on EVERY page. Prove
+    // it at the seam-contract level: inject once, then drive N page starts and
+    // assert the injection op fired on EACH — so the caller (and a future
+    // `WezigRenderer`) sees the SAME document-start contract as iOS/WebKitGTK.
+    var java = FakeJava{};
+    var backend = AndroidWebviewRenderer.init(java.bridge());
+    const r = backend.renderer();
+
+    const marker = "window.wezig = { marker: true };";
+    r.injectUserScript(marker);
+    // The initial injection fired exactly once and reached the bridge.
+    try std.testing.expectEqual(@as(usize, 1), java.inject_count);
+    try std.testing.expectEqualStrings(marker, java.injected.?);
+
+    // Drive N document starts (the WebViewClient's onPageStarted -> `.started`,
+    // marshalled up through the JNI load-state entry point). Each must re-issue
+    // the remembered source through the bridge's injectUserScript op.
+    const N: usize = 5;
+    var i: usize = 0;
+    while (i < N) : (i += 1) {
+        wezig_android_on_load_state(&backend, @intFromEnum(AndroidLoadEvent.page_started), "https://page.example/");
+        // A committed/finished in the SAME page must NOT re-inject (only starts do).
+        wezig_android_on_load_state(&backend, @intFromEnum(AndroidLoadEvent.page_committed), "https://page.example/");
+        wezig_android_on_load_state(&backend, @intFromEnum(AndroidLoadEvent.page_finished), "https://page.example/");
+    }
+
+    // Initial inject (1) + one re-injection per `.started` (N).
+    try std.testing.expectEqual(@as(usize, 1 + N), java.inject_count);
+    // The last re-issued source is still the remembered one (unchanged).
+    try std.testing.expectEqualStrings(marker, java.injected.?);
+
+    // A backend with NO prior injectUserScript re-injects nothing on `.started`.
+    var bare_java = FakeJava{};
+    var bare = AndroidWebviewRenderer.init(bare_java.bridge());
+    wezig_android_on_load_state(&bare, @intFromEnum(AndroidLoadEvent.page_started), "https://x.example/");
+    try std.testing.expectEqual(@as(usize, 0), bare_java.inject_count);
+}
+
+test "AndroidWebviewRenderer: exactly one JNI global-ref per view, zero after teardown (ADR-0009 leak fix)" {
+    // Story 8 / ADR-0009 §Consequences: `view()` must mint the JNI global-ref
+    // LAZILY and cache it (one live ref per view, returned unchanged across
+    // calls) instead of leaking a fresh ref per call; teardown deletes it and
+    // frees the bridge's native ctx, so ZERO refs remain. Proven headlessly via
+    // the fake bridge's ref counter.
+    var java = FakeJava{};
+    var backend = AndroidWebviewRenderer.init(java.bridge());
+    const r = backend.renderer();
+
+    // No ref is minted until the first `view()` (lazy).
+    try std.testing.expectEqual(@as(usize, 0), java.view_mints);
+    try std.testing.expectEqual(@as(usize, 0), java.live_view_refs);
+
+    // Repeated `view()` calls mint the ref ONCE and hand back the SAME handle.
+    const h1 = r.view();
+    const h2 = r.view();
+    const h3 = r.view();
+    try std.testing.expectEqual(h1, h2);
+    try std.testing.expectEqual(h2, h3);
+    try std.testing.expectEqual(@as(usize, 1), java.view_mints);
+    try std.testing.expectEqual(@as(usize, 1), java.live_view_refs);
+
+    // Teardown deletes the one cached ref (net zero) and frees the native ctx.
+    backend.deinit();
+    try std.testing.expectEqual(@as(usize, 0), java.live_view_refs);
+    try std.testing.expect(java.torn_down);
+
+    // Teardown WITHOUT ever taking the view mints/deletes nothing but still
+    // tears the native ctx down (no dangling native per-renderer state).
+    var java2 = FakeJava{};
+    var backend2 = AndroidWebviewRenderer.init(java2.bridge());
+    backend2.deinit();
+    try std.testing.expectEqual(@as(usize, 0), java2.view_mints);
+    try std.testing.expectEqual(@as(usize, 0), java2.live_view_refs);
+    try std.testing.expect(java2.torn_down);
+}
+
+test "C-ABI renderer teardown deletes the one cached view ref + frees the ctx (as the JNI shim would)" {
+    // Exercise the EXACT C-ABI teardown surface the JNI shim uses: construct via
+    // `wezig_android_renderer_init`, take the view a few times (one mint), then
+    // `wezig_android_renderer_deinit` must delete that one ref and free the ctx.
+    const CJava = struct {
+        var token: u8 = 0;
+        var mints: usize = 0;
+        var live: usize = 0;
+        var torn_down: bool = false;
+        fn noop(_: ?*anyopaque) callconv(.c) void {}
+        fn no(_: ?*anyopaque) callconv(.c) bool {
+            return false;
+        }
+        fn nav(_: ?*anyopaque, _: [*:0]const u8) callconv(.c) void {}
+        fn view(_: ?*anyopaque) callconv(.c) ?*anyopaque {
+            mints += 1;
+            live += 1;
+            return &token;
+        }
+        fn deleteView(_: ?*anyopaque, v: ?*anyopaque) callconv(.c) void {
+            std.debug.assert(v == @as(?*anyopaque, &token));
+            live -= 1;
+        }
+        fn viewport(_: ?*anyopaque, _: c_int, _: c_int) callconv(.c) void {}
+        fn source(_: ?*anyopaque, _: [*:0]const u8) callconv(.c) void {}
+        fn teardown(_: ?*anyopaque) callconv(.c) void {
+            torn_down = true;
+        }
+    };
+    CJava.mints = 0;
+    CJava.live = 0;
+    CJava.torn_down = false;
+
+    const cbridge = CJavaBridge{
+        .ctx = null,
+        .navigate = CJava.nav,
+        .reload = CJava.noop,
+        .stop = CJava.noop,
+        .goBack = CJava.noop,
+        .goForward = CJava.noop,
+        .canGoBack = CJava.no,
+        .canGoForward = CJava.no,
+        .view = CJava.view,
+        .deleteView = CJava.deleteView,
+        .setViewportSize = CJava.viewport,
+        .injectUserScript = CJava.source,
+        .setScriptMessageHandler = CJava.source,
+        .evaluateScript = CJava.source,
+        .registerScheme = CJava.source,
+        .teardown = CJava.teardown,
+    };
+    const handle = wezig_android_renderer_init(&cbridge).?;
+    const backend: *AndroidWebviewRenderer = @ptrCast(@alignCast(handle));
+
+    // Take the view via BOTH the seam and the embedding C accessor; still ONE mint.
+    _ = backend.renderer().view();
+    _ = wezig_android_renderer_view(handle);
+    try std.testing.expectEqual(@as(usize, 1), CJava.mints);
+    try std.testing.expectEqual(@as(usize, 1), CJava.live);
+
+    wezig_android_renderer_deinit(handle);
+    try std.testing.expectEqual(@as(usize, 0), CJava.live);
+    try std.testing.expect(CJava.torn_down);
+}
+
 test "C bridge + scheme observers receive the real seam legs (as the JNI shim would)" {
     // Exercise the EXACT C-ABI surface the JNI shim/instrumented test uses for
     // the two hooks: a C bridge observer receives the page->native post; a C
@@ -1137,6 +1416,7 @@ test "C-ABI construction path drives navigate + finished event (as the JNI shim 
         fn view(_: ?*anyopaque) callconv(.c) ?*anyopaque {
             return &token;
         }
+        fn deleteView(_: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {}
         fn viewport(_: ?*anyopaque, _: c_int, _: c_int) callconv(.c) void {}
         fn source(_: ?*anyopaque, _: [*:0]const u8) callconv(.c) void {}
     };
@@ -1152,11 +1432,13 @@ test "C-ABI construction path drives navigate + finished event (as the JNI shim 
         .canGoBack = CJava.no,
         .canGoForward = CJava.no,
         .view = CJava.view,
+        .deleteView = CJava.deleteView,
         .setViewportSize = CJava.viewport,
         .injectUserScript = CJava.source,
         .setScriptMessageHandler = CJava.source,
         .evaluateScript = CJava.source,
         .registerScheme = CJava.source,
+        .teardown = CJava.noop,
     };
     const handle = wezig_android_renderer_init(&cbridge).?;
     defer wezig_android_renderer_deinit(handle);
