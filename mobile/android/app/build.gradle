@@ -1,0 +1,55 @@
+plugins {
+    id 'com.android.application'
+}
+
+// The wezig core (Zig static lib) is cross-compiled OUTSIDE Gradle by
+// build-zig-libs.sh into a per-ABI staging dir under app/.cxx-zig/<abi>/. The
+// CMake externalNativeBuild imports that .a per ABI via WEZIG_ZIG_LIB_DIR.
+def zigStageDir = new File(projectDir, ".cxx-zig")
+
+android {
+    namespace 'dev.wighawag.wezig'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "dev.wighawag.wezig"
+        minSdk 26          // API 26 floor (spec)
+        targetSdk 34
+        versionCode 1
+        versionName "0.0.0"
+
+        ndk {
+            // arm64-v8a (device) + x86_64 (emulator), per the spec floor.
+            abiFilters 'arm64-v8a', 'x86_64'
+        }
+
+        externalNativeBuild {
+            cmake {
+                arguments "-DANDROID_STL=none"
+                // Per-ABI dir holding libwezig_mobile.a. CMake reads
+                // ${WEZIG_ZIG_LIB_DIR} which we resolve per-abi below via a
+                // generator expression on ANDROID_ABI.
+                arguments "-DWEZIG_ZIG_LIB_DIR=${zigStageDir.absolutePath}/\${ANDROID_ABI}"
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path "src/main/cpp/CMakeLists.txt"
+            version "3.22.1"
+        }
+    }
+
+    buildTypes {
+        debug {
+            // Simulator/emulator + local proof: unsigned debug APK, no signing
+            // config needed (matches the "installable APK" floor).
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}

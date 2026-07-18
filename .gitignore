@@ -5,3 +5,8 @@ zig-out/
 # dependencies into this directory during `zig build`; it is a regenerated
 # build artifact, not source.
 zig-pkg/
+
+# Android: per-ABI Zig static-lib staging (built by build-zig-libs.sh) and the
+# shared C-ABI header copied in for the self-contained NDK build.
+mobile/android/app/.cxx-zig/
+mobile/android/app/src/main/cpp/wezig_mobile.h

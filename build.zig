@@ -247,11 +247,21 @@ pub fn build(b: *std.Build) void {
         "mobile-sysroot",
         "Platform SDK sysroot for the mobile static lib's C deps (iOS SDK path / Android NDK sysroot)",
     );
+    // Android's NDK sysroot puts ARCH-specific headers (e.g. <asm/types.h>) under
+    // `usr/include/<triple>` (e.g. usr/include/aarch64-linux-android), separate
+    // from the shared `usr/include`. iOS has no such split. When set, this adds
+    // that arch include dir so bionic's <linux/types.h> -> <asm/types.h> resolves.
+    const mobile_sysroot_arch_include = b.option(
+        []const u8,
+        "mobile-sysroot-arch-include",
+        "Extra arch-specific include dir under the sysroot (Android NDK: the <triple> subdir of usr/include)",
+    );
     const MobileLib = struct {
         b: *std.Build,
         optimize: std.builtin.OptimizeMode,
         mobile_target_str: ?[]const u8,
         mobile_sysroot: ?[]const u8,
+        mobile_sysroot_arch_include: ?[]const u8,
         fn make(self: @This(), step_name: []const u8, desc: []const u8, default_triple: []const u8) void {
             const triple = self.mobile_target_str orelse default_triple;
             const query = std.Target.Query.parse(.{ .arch_os_abi = triple }) catch |err| {
@@ -275,6 +285,15 @@ pub fn build(b: *std.Build) void {
             // `usr/include` root, so one form covers both.
             if (self.mobile_sysroot) |sysroot| {
                 lib_mod.addSystemIncludePath(.{ .cwd_relative = self.b.pathJoin(&.{ sysroot, "usr", "include" }) });
+                // Android NDK: also make the arch-specific headers dir resolvable
+                // for <asm/*.h>. Absolute path if given, else <sysroot>/usr/include/<name>.
+                if (self.mobile_sysroot_arch_include) |arch_inc| {
+                    const path = if (std.fs.path.isAbsolute(arch_inc))
+                        arch_inc
+                    else
+                        self.b.pathJoin(&.{ sysroot, "usr", "include", arch_inc });
+                    lib_mod.addSystemIncludePath(.{ .cwd_relative = path });
+                }
             }
             const lib = self.b.addLibrary(.{
                 .name = "wezig_mobile",
@@ -286,7 +305,7 @@ pub fn build(b: *std.Build) void {
             step.dependOn(&install.step);
         }
     };
-    const mobile_lib = MobileLib{ .b = b, .optimize = optimize, .mobile_target_str = mobile_target_str, .mobile_sysroot = mobile_sysroot };
+    const mobile_lib = MobileLib{ .b = b, .optimize = optimize, .mobile_target_str = mobile_target_str, .mobile_sysroot = mobile_sysroot, .mobile_sysroot_arch_include = mobile_sysroot_arch_include };
     mobile_lib.make("ios-lib", "Cross-compile the wezig mobile static lib for iOS (-Dmobile-target, default aarch64-ios-simulator)", "aarch64-ios-simulator");
     mobile_lib.make("android-lib", "Cross-compile the wezig mobile static lib for Android (-Dmobile-target, default aarch64-linux-android)", "aarch64-linux-android");
 
