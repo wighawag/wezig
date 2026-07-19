@@ -257,7 +257,15 @@ lessons are load-bearing:
   COULD be implemented in Rust/C++ behind a seam without a wholesale rewrite. The
   commitment is "Zig glue + seams + bound engines", which is looser and more
   reversible than "the whole browser in Zig". This is the property that makes
-  keeping Zig low-risk.
+  keeping Zig low-risk. A stronger form of the same escape hatch — building
+  `WezigRenderer` in BOTH Rust and Zig behind the seam as a differential-testing +
+  language bake-off judged by the shared ADR-0012 WPT/checklist vectors, then
+  converging to one — is analysed (with the Ethereum multi-client analogy and why
+  a PERMANENT two-engine commitment does NOT pay off for a single-author browser)
+  in `work/notes/ideas/rust-zig-renderer-differential-bakeoff-ethereum-multiclient-analogy.md`.
+  The `WezigRenderer` language is therefore a DEFERRED, seam-gated, per-component
+  decision — NOT a rewrite of the existing ~16k Zig lines (most of which is
+  platform/webview glue a Rust rewrite would only make harder).
 - **The pre-1.0 churn tax is accepted, and already mitigated.** Zig < 1.0 breaks
   across minors (already felt: the `std.Io` streaming-reader EOF spin worked around
   in the wallet-broker child; the compiler-version guard in `build.zig`). The
