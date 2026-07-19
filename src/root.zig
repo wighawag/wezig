@@ -66,6 +66,20 @@ pub const wezig_renderer = @import("wezig_renderer.zig");
 /// `chrome_conformance` is untouched; pure Zig, tests run in `zig build test`.
 pub const renderer_swap = @import("renderer_swap.zig");
 
+/// The content-addressed ORIGIN model + the per-ORIGIN wallet-link data model +
+/// the seam's per-origin provider binding (spec `explore-web3-capabilities`,
+/// stories 1/3/5; ADR-0015 decisions 1–3; ADR-0011): the TRUST-BOUNDARY model
+/// everything web3 keys on. `ContentOrigin` = the IPFS content address (ENS
+/// resolves TO it); `WalletLinkStore` keys the wallet link by ORIGIN, not tab
+/// (same-origin tabs SHARE, different origins are INDEPENDENT) + the ENS-repoint
+/// carry-forward; `OriginProviderBinding` expresses the per-origin provider
+/// channel over the `Renderer` seam (replacing the single hardcoded channel).
+/// Pure Zig behind the seam (imports only `renderer.zig`, no webview/GTK
+/// binding), so its data-model + binding-routing tests run in the display-free
+/// `zig build test` gate. A decision/data-model deliverable — NOT the wallet,
+/// storage, or encryption subsystem.
+pub const web3_origin = @import("web3_origin.zig");
+
 /// The `ScriptEngine` seam (ADR-0013): the JavaScript-runtime boundary. Pure
 /// interface (no bound engine), making the JS-engine choice REVERSIBLE the same
 /// way the `Renderer` seam is — a BOUND engine (SpiderMonkey/JSC/V8, lean
@@ -196,6 +210,7 @@ test {
     _ = docs;
     _ = chrome_conformance;
     _ = renderer;
+    _ = web3_origin;
     _ = wezig_renderer;
     _ = renderer_swap;
     _ = script_engine;
