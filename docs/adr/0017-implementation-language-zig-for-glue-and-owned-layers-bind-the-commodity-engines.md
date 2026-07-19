@@ -99,6 +99,103 @@ seam-level escape hatch.
   corrects an earlier draft of this ADR that mis-stated Ladybird as having chosen
   Swift; it evaluated Swift, then adopted Rust — see below.)
 
+### The positive Zig-over-Rust case (why not JUST default to Rust)
+
+The alternatives above say why not SWITCH; this says what Zig positively BUYS over
+Rust for wezig's specific shape (so the choice is a reason, not inertia):
+
+1. **C/C++ interop is night-and-day, and it is the whole strategy.**
+   `@cImport(@cInclude("skia.h"))` yields bindings directly — no `bindgen`, no
+   `cxx` crate, no separate FFI layer, no `unsafe extern` upkeep. For a browser
+   that BINDS Skia/HarfBuzz/SDL/libcurl/WebKitGTK/wgpu-native/SpiderMonkey — i.e.
+   crosses the C boundary constantly — this is Zig's single biggest, most
+   defensible edge. Rust can do all of it, but every binding is friction; in Zig
+   it is the happy path.
+2. **Zig is also a C/C++ COMPILER + cross-compiler + build system.** `zig build`
+   cross-compiles to iOS/Android/etc. out of the box (wezig already does this for
+   the mobile static libs) and `zig cc` compiles the C deps for any target. Rust
+   leans on cargo + external toolchains + `cc-rs`, and cross-compiling with C deps
+   is fiddlier. wezig's mobile cross-compile story is materially simpler in Zig.
+3. **No hidden control flow / no hidden allocation.** No implicit destructors,
+   operator overloading, `Deref` magic, or default unwinding panics — what you read
+   is what runs, and allocators are explicit VALUES passed in (which is why the
+   seam tests catch leaks deterministically with a testing allocator).
+4. **`comptime` is one simple mechanism** replacing macros + most generics + const
+   generics — less magic, less to learn, no separate macro language.
+5. **The web platform's object graph fits manual memory better than ownership.**
+   The DOM is deep inheritance + cyclic references + GC-shaped lifetimes; Rust's
+   single-owner model fights that (→ `Rc<RefCell<>>`/arenas/`unsafe`, which claws
+   back much of the safety benefit anyway). This is the EXACT reason Ladybird
+   rejected Rust in 2024. Zig's manual/arena allocation sidesteps the mismatch.
+6. **Smaller language + faster productivity** for a small team: no borrow-checker
+   to fight, no lifetime puzzles, no trait-resolution rabbit holes.
+
+The counterweight is honest and stated elsewhere in this ADR: Rust's memory
+safety + ecosystem + tooling maturity beat Zig's, and Zig's pre-1.0 churn is a
+standing tax. The net: Zig wins on interop/cross-compile/legibility/object-graph
+fit; Rust wins on safety/ecosystem — and for a bind-everything, Linux-first,
+single-author, seam-isolated browser, Zig's wins compound daily while Rust's
+biggest win (safety) is the one wezig can most credibly buy back with ARCHITECTURE
+(the posture in Consequences).
+
+### The LLM-authorship lens (the strongest single argument FOR Rust — weighed honestly)
+
+If LLMs write most of wezig's code, the balance shifts TOWARD Rust, and this is
+recorded rather than buried because it is the most serious case against this
+decision:
+
+- **Rust's compiler catches an LLM's most common failure mode.** LLMs produce
+  confident-but-subtly-wrong memory handling (use-after-free, aliasing,
+  forgotten cleanup, iterator invalidation). Rust REJECTS that class at compile
+  time; Zig compiles it and fails at runtime (or silently in `ReleaseFast`). A
+  compiler that refuses to build the unsafe version is a large safety net when the
+  author does not reliably hold invariants in its head.
+- **More + fresher training data.** Rust is post-1.0 and huge in the corpus; Zig
+  is younger, smaller, and PRE-1.0 with breaking churn — so much Zig in training
+  data is written against OLD std/language versions. wezig already felt this
+  (`std.Io` reader API churn, `std.ArrayList` unmanaged, `std.posix.write` absent):
+  an LLM trained on Zig 0.11–0.13 confidently writes code that fails on 0.16.
+- **Richer type-level guardrails tighten the fix-loop.** More LLM mistakes surface
+  as Rust type errors the model can then repair, making the
+  compile-error→regenerate loop more productive.
+
+**Can testing (which LLMs do cheaply) EMULATE Rust's safety? Partially — not
+fully, and the gap is where the risk concentrates.** This is the load-bearing
+nuance, because if testing fully substituted, the LLM-argument for Rust would
+collapse; it does not:
+
+- **What testing DOES catch:** deterministic reachable bugs (with `ReleaseSafe`/
+  UBSan trapping), input-shaped bugs (coverage-guided fuzzing), and leaks (the
+  testing allocator) — and LLMs make writing lots of tests + fuzz harnesses cheap,
+  which genuinely strengthens the Zig case versus a human-authored world.
+- **What it CANNOT fully emulate:** Rust PROVES safety over all inputs and all
+  interleavings; testing SAMPLES them. An attacker's whole job is the path the
+  tests missed (fuzzing narrows this but never closes it). CONCURRENCY DATA RACES
+  are the worst case — Rust's `Send`/`Sync` eliminate them at compile time; testing
+  for races is timing-dependent and unreliable, and a browser is heavily concurrent.
+- **The LLM-specific trap — CORRELATED BLIND SPOTS.** If the SAME LLM writes both
+  the code and the tests that are supposed to substitute for safety, the test
+  suite inherits the author's blind spots (the flawed mental model that produced
+  the use-after-free also fails to test that edge). Rust's borrow checker is
+  valuable precisely because it is an INDEPENDENT adversary that does not share the
+  author's assumptions. A self-graded test suite is not that.
+
+**Consequence (this is what makes keeping Zig defensible UNDER LLM authorship):**
+the safety buy-back must NOT rely on the author grading its own homework. It
+requires (a) an INDEPENDENT adversarial safety review — a DIFFERENT model/context
+reviewing specifically for memory safety, which is exactly the Gate-2 reviewer
+pattern wezig already runs; (b) fuzzing as a MANDATORY CI leg, not optional;
+(c) `ReleaseSafe` on security paths; and (d) PROCESS ISOLATION as the
+architectural backstop — the one mitigation that does NOT inherit the LLM's blind
+spots, because a contained parser crash is a topological guarantee, not a test. So
+under LLM authorship the posture in Consequences is not merely good practice — it
+is the load-bearing substitute for the compile-time safety the LLM-author lacks,
+and "testing emulates Rust safety" is only true with an INDEPENDENT checker +
+isolation, never with self-written tests alone. If, in practice, that discipline
+proves insufficient, the escape hatch (move the hottest attacker-facing component
+to Rust BEHIND A SEAM) is the pre-agreed answer — mirroring how Ladybird itself
+ported incrementally behind interop boundaries.
+
 ## Learning from Ladybird (the most relevant sibling — recorded so the lesson is durable)
 
 Ladybird is the closest independent, from-scratch, no-Chromium browser, so its
