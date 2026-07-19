@@ -75,12 +75,17 @@ patching the backend costs one file, never a rewrite.
    given backend can honour SW-hosting varies.
 
 6. **Commit to the fork ONLY after a de-risking spike measures its cost.** We do
-   NOT sign up for a WebKit fork's maintenance tail on speculation. A time-boxed
-   spike (`spike-webkitgtk-sw-scheme-patch`) first PROVES the patch works
-   (patched WebKitGTK hosts one SW on a secure `ipfs://` page end-to-end) and
-   MEASURES the standing cost (build time, patch size vs current `main`, rebase
-   friction across 1–2 recent WebKit releases, the upstream-proposal draft). The
-   keep-as-fork commitment is ratified AFTER that data exists.
+   NOT sign up for a WebKit fork's maintenance tail on speculation. The spike is
+   SPLIT (the dev box cannot build WebKitGTK from source — ~40–60 GB disk + 16 GB+
+   RAM + hours + cmake/ninja/ruby it lacks): `spike-webkitgtk-sw-scheme-patch-locate-and-draft`
+   (environment-independent — pins + SIZES the minimal patch against real WebKit
+   source, drafts the upstream proposal, expresses a `service_worker_capable` scheme
+   trait at the seam) runs anywhere; `spike-webkitgtk-sw-scheme-patch-build-and-measure`
+   (`humanOnly`, hardware-gated — builds patched WebKitGTK, PROVES one live SW on a
+   secure `ipfs://` page end-to-end, MEASURES build time + rebase friction across
+   1–2 releases) runs on a provisioned host. Together they produce the full
+   ratification data (patch size + upstream draft + build time + rebase friction).
+   The keep-as-fork commitment is ratified AFTER that data exists.
 
 ## Consequences
 
