@@ -47,6 +47,25 @@ pub const renderer = @import("renderer.zig");
 /// here (so libcurl never enters the library `mod` or the mobile cross-compiles).
 pub const networking = @import("networking.zig");
 
+/// The native static-page `WezigRenderer` STUB (spec `explore-native-renderer`,
+/// story 4/6, decision 4): the minimal real SECOND `Renderer` backend the
+/// user-controlled swap needs, painting ONE static page THROUGH the v0
+/// layout/paint pipeline behind the `Renderer` seam. Pure Zig (paints via
+/// `paint.renderScene`, already in this module — links nothing new), so its
+/// seam-contract + paint tests run in the display-free `zig build test` gate,
+/// unlike the webview backend which links native GTK/WebKit and is shell-only.
+pub const wezig_renderer = @import("wezig_renderer.zig");
+
+/// The USER-controlled renderer swap coordinator + per-domain-allow data model
+/// (spec `explore-native-renderer`, story 4/6, decision 4; ADR-0005/0011):
+/// `RendererSwap` holds BOTH `Renderer` seam values and performs the three-step
+/// swap (re-point + re-attach + re-navigate) on a MANUAL trigger, with an
+/// `EngineKind` indicator; `DomainAllowList` is the persistent user allow-list
+/// of domains that always render native. NO automatic routing; manual fallback.
+/// Talks ONLY to the `Renderer` seam (no webview/GTK binding), so
+/// `chrome_conformance` is untouched; pure Zig, tests run in `zig build test`.
+pub const renderer_swap = @import("renderer_swap.zig");
+
 /// The `ScriptEngine` seam (ADR-0013): the JavaScript-runtime boundary. Pure
 /// interface (no bound engine), making the JS-engine choice REVERSIBLE the same
 /// way the `Renderer` seam is — a BOUND engine (SpiderMonkey/JSC/V8, lean
@@ -177,6 +196,8 @@ test {
     _ = docs;
     _ = chrome_conformance;
     _ = renderer;
+    _ = wezig_renderer;
+    _ = renderer_swap;
     _ = script_engine;
     _ = networking;
     _ = android_renderer;
