@@ -12,6 +12,12 @@ name: ci
 # and `build.zig` asserts the running Zig matches it (so any drift — local or CI
 # — fails fast). Bump the version in `build.zig.zon` alone.
 #
+# Further DEDICATED legs (`harfbuzz`, `networking`, `gpu`) run the provisioned
+# spike proofs of `explore-native-renderer` (real shaping; bound fetch+verify;
+# the page-facing WebGPU/WebGL frame) — each needs a provisioned system dep and/or
+# live resource the bare `gate` job never installs (ADR-0007), so they stay off
+# the core display-free gate and green here.
+#
 # A SECOND job (`webview`) runs the headless WebKitGTK/GTK4 shell proofs
 # (`shell-test`/`shell-bridge-test`/`shell-scheme-test`) under Xvfb. ADR-0007
 # requires these as a DEDICATED leg (they need `xvfb` + `libwebkitgtk-6.0-dev`
@@ -138,3 +144,48 @@ jobs:
 
       - name: Run the networking fetch+verify spike (NOT in the core gate)
         run: zig build -Dnetworking-live networking-fetch-test
+
+  # The page-facing GPU spike (ADR-0007, spec explore-native-renderer story 3/6):
+  # a DEDICATED leg, separate from the display-free `gate`, for the SAME reason the
+  # `harfbuzz`/`networking`/`webview` legs are separate — it links provisioned GPU
+  # stacks (EGL/GLES system libs for the WebGL leg; the fetched `wgpu-native`
+  # prebuilt for the WebGPU leg) AND its render proof needs a HEADLESS GPU DRIVER
+  # (Mesa `llvmpipe` for GL; lavapipe via `mesa-vulkan-drivers` for wgpu-native's
+  # Vulkan backend), none of which the bare `gate` job provisions. It draws ONE
+  # WebGPU frame (via the chosen leaf wgpu-native) and ONE WebGL frame from one
+  # shader each into a page-`<canvas>`-facing offscreen surface and verifies the
+  # rendered pixel. `-Dgpu-live` opts the live render legs in; `-Dwgpu-native-path`
+  # wires in the fetched prebuilt so the WebGPU leg compiles. `LIBGL_ALWAYS_SOFTWARE`
+  # forces Mesa's software rasteriser (runners have no GPU) and `XDG_RUNTIME_DIR`
+  # is set because the Vulkan loader requires it.
+  gpu:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Zig
+        # Empty version => resolved from build.zig.zon's minimum_zig_version.
+        uses: mlugg/setup-zig@v2
+
+      - name: Install the GPU spike's system dependencies (Mesa GL + EGL + lavapipe Vulkan)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libegl1-mesa-dev libgles2-mesa-dev libgl1-mesa-dri mesa-vulkan-drivers libvulkan-dev
+
+      - name: Fetch the chosen GPU leaf (wgpu-native prebuilt) for the WebGPU leg
+        run: |
+          mkdir -p wgpu-native
+          curl -sSL -o wgpu.zip \
+            https://github.com/gfx-rs/wgpu-native/releases/download/v25.0.2.2/wgpu-linux-x86_64-release.zip
+          unzip -q wgpu.zip -d wgpu-native
+
+      - name: Run the page-facing GPU frame spike (NOT in the core gate)
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          XDG_RUNTIME_DIR: /tmp/xdg-runtime
+        run: |
+          mkdir -p "$XDG_RUNTIME_DIR"
+          LD_LIBRARY_PATH="$PWD/wgpu-native/lib" \
+            zig build -Dgpu-live -Dwgpu-native-path="$PWD/wgpu-native" page-gpu-frame-test

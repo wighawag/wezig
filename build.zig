@@ -304,6 +304,69 @@ pub fn build(b: *std.Build) void {
     // is what the CI leg runs. Force the option on for the step itself.
     net_spike_step.dependOn(&run_net_spike_tests.step);
 
+    // --- SPIKE: page-facing GPU frame via wgpu-native (WebGPU) + EGL/GLES (WebGL) ----
+    // De-risking spike (spec `explore-native-renderer`, story 3/6, decision 2):
+    // proves the PAGE-FACING GPU path on the NATIVE renderer on the narrowest real
+    // case — ONE WebGPU frame via the CHOSEN leaf `wgpu-native` AND ONE WebGL frame
+    // via the native GL substrate (EGL surfaceless + OpenGL ES 2.0), each from ONE
+    // shader into the offscreen `Surface` (ADR-0003) a page `<canvas>` would present
+    // (NOT internal compositing). The concrete leaf pick + the WebGL first-class
+    // assessment are recorded in
+    // `work/notes/findings/gpu-page-context-pick-wgpu-native-2026-07-19.md`.
+    //
+    // Like the `harfbuzz`/`networking`/`webview` legs (ADR-0007), this is NOT folded
+    // into the bare `zig build test` gate: it links EGL/GLESv2 (system GPU libs) and
+    // `wgpu-native` (a provisioned prebuilt), and its real proof needs a headless GPU
+    // driver (Mesa `llvmpipe` for GL; lavapipe/`mesa-vulkan-drivers` for the WebGPU
+    // Vulkan backend), none of which the bare `gate` job provisions. So it gets a
+    // DEDICATED provisioned CI leg (the `gpu` job) via `zig build page-gpu-frame-test`.
+    // The live render legs are guarded by `-Dgpu-live` (set by that step): with the
+    // flag off a bare `zig test` of the file compiles+links the bound stacks and
+    // SKIPS the driver-touching legs, so nothing load-bearing needs a GPU present.
+    //
+    // The WebGPU leg is compiled ONLY when a wgpu-native prebuilt is provided via
+    // `-Dwgpu-native-path=<dir>` (a dir with `include/` + `lib/`); absent it,
+    // `has_wgpu` is false and only the WebGL leg (ordinary system EGL/GLES) builds.
+    // wgpu-native/EGL are linked ONLY into this spike's test exe — NOT the `wezig`
+    // `mod` — so they never enter the desktop consumers or the mobile cross-compiles.
+    const gpu_live = b.option(
+        bool,
+        "gpu-live",
+        "Run the page-GPU spike's LIVE render legs (needs a headless GPU driver); set by `zig build page-gpu-frame-test`",
+    ) orelse false;
+    const wgpu_native_path = b.option(
+        []const u8,
+        "wgpu-native-path",
+        "Path to an extracted wgpu-native release (dir with include/ + lib/); enables the WebGPU leg of the page-GPU spike",
+    );
+    const gpu_opts = b.addOptions();
+    gpu_opts.addOption(bool, "gpu_live", gpu_live);
+    gpu_opts.addOption(bool, "has_wgpu", wgpu_native_path != null);
+    const gpu_spike_mod = b.createModule(.{
+        .root_source_file = b.path("src/gpu_page_spike.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "wezig", .module = mod }},
+    });
+    gpu_spike_mod.addImport("build_options", gpu_opts.createModule());
+    gpu_spike_mod.link_libc = true;
+    // The native GL substrate a WebGL context runs on (system libs via the linker;
+    // headers resolve from the standard include path). GLESv2 pulls GL2 symbols;
+    // EGL provides the headless surfaceless context.
+    gpu_spike_mod.linkSystemLibrary("EGL", .{});
+    gpu_spike_mod.linkSystemLibrary("GLESv2", .{});
+    // wgpu-native (the CHOSEN WebGPU leaf), when a prebuilt was provided: add its
+    // include/ for the `@cImport` of webgpu.h/wgpu.h and its lib/ for `-lwgpu_native`.
+    if (wgpu_native_path) |wp| {
+        gpu_spike_mod.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ wp, "include", "webgpu" }) });
+        gpu_spike_mod.addLibraryPath(.{ .cwd_relative = b.pathJoin(&.{ wp, "lib" }) });
+        gpu_spike_mod.linkSystemLibrary("wgpu_native", .{});
+    }
+    const gpu_spike_tests = b.addTest(.{ .root_module = gpu_spike_mod });
+    const run_gpu_spike_tests = b.addRunArtifact(gpu_spike_tests);
+    const gpu_spike_step = b.step("page-gpu-frame-test", "SPIKE: one WebGPU frame (wgpu-native) + one WebGL frame (EGL/GLES) into a page-canvas surface (needs a headless GPU; NOT in `test` — its own CI leg)");
+    gpu_spike_step.dependOn(&run_gpu_spike_tests.step);
+
     // --- MOBILE static libraries (ADR-0008 split Toolkit; explore-mobile-shell) --
     // On mobile the Zig core builds a STATIC LIBRARY (`libwezig_mobile.a`) that
     // an OS-native shell hosts and calls through the C-ABI in `src/mobile_abi.zig`
