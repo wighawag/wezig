@@ -258,6 +258,52 @@ pub fn build(b: *std.Build) void {
     const hb_spike_step = b.step("harfbuzz-shape-test", "SPIKE: real HarfBuzz shaping behind the PaintBackend seam (needs libharfbuzz-dev; NOT in `test` — its own CI leg)");
     hb_spike_step.dependOn(&run_hb_spike_tests.step);
 
+    // --- SPIKE: networking fetch + hash-verify via the BOUND libcurl+TLS stack ----
+    // De-risking spike (spec `explore-native-renderer`, story 2/6, decision 2):
+    // proves the PINNED networking direction — BIND a vetted HTTP + TLS stack,
+    // NEVER write TLS — on the narrowest real case: fetch ONE ordinary `https://`
+    // resource through libcurl (its OpenSSL TLS backend), the compatibility floor.
+    //
+    // The SEAM (`net.Fetcher`) + the hash-verify THESIS live in `src/networking.zig`
+    // (pure Zig, in the `wezig` `mod` + the display-free `zig build test` gate).
+    // THIS step compiles the BOUND half (`src/networking_spike.zig` → `CurlFetcher`),
+    // which links libcurl — a SYSTEM library resolved via pkg-config (`-lcurl`) —
+    // and runs its LIVE `https://` fetch. Like HarfBuzz/WebKitGTK it is NOT folded
+    // into the bare `zig build test` gate (that CI job provisions no libcurl and has
+    // no network egress); it gets a DEDICATED provisioned CI leg (the `networking`
+    // job in ci.yml, mirroring `harfbuzz`/`webview`; ADR-0007). The live legs are
+    // guarded by the `-Dnetworking-live` build option this step sets, so the fetch
+    // runs here but a bare `zig test` of the file (option off, no egress) still
+    // passes by compiling+linking the bound stack and skipping the network.
+    //
+    // libcurl is linked ONLY into this spike's test executable — NOT the `wezig`
+    // `mod` — so it never enters the desktop consumers or the mobile cross-compiles
+    // (which rebuild `src/root.zig`). The spike module imports `wezig` for the seam
+    // + verifier it satisfies, plus a `build_options` module carrying the live flag.
+    const networking_live = b.option(
+        bool,
+        "networking-live",
+        "Run the networking spike's LIVE https legs (needs network egress); set by `zig build networking-fetch-test`",
+    ) orelse false;
+    const net_opts = b.addOptions();
+    net_opts.addOption(bool, "networking_live", networking_live);
+    const net_spike_mod = b.createModule(.{
+        .root_source_file = b.path("src/networking_spike.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "wezig", .module = mod }},
+    });
+    net_spike_mod.addImport("build_options", net_opts.createModule());
+    net_spike_mod.link_libc = true;
+    // libcurl headers + lib via pkg-config (libcurl4-openssl-dev on the dev box/CI).
+    net_spike_mod.linkSystemLibrary("libcurl", .{});
+    const net_spike_tests = b.addTest(.{ .root_module = net_spike_mod });
+    const run_net_spike_tests = b.addRunArtifact(net_spike_tests);
+    const net_spike_step = b.step("networking-fetch-test", "SPIKE: fetch one https resource + hash-verify a content-addressed one via bound libcurl+TLS (needs libcurl4-openssl-dev + network; NOT in `test` — its own CI leg)");
+    // This step opts the live legs in; `zig build -Dnetworking-live networking-fetch-test`
+    // is what the CI leg runs. Force the option on for the step itself.
+    net_spike_step.dependOn(&run_net_spike_tests.step);
+
     // --- MOBILE static libraries (ADR-0008 split Toolkit; explore-mobile-shell) --
     // On mobile the Zig core builds a STATIC LIBRARY (`libwezig_mobile.a`) that
     // an OS-native shell hosts and calls through the C-ABI in `src/mobile_abi.zig`

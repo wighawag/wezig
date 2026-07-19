@@ -109,3 +109,32 @@ jobs:
 
       - name: Run the HarfBuzz shaping spike (NOT in the core gate)
         run: zig build harfbuzz-shape-test
+
+  # The networking fetch+verify spike (ADR-0007, spec explore-native-renderer):
+  # a DEDICATED leg, separate from the display-free `gate`, for the SAME reason
+  # the `harfbuzz`/`webview` legs are separate — it binds a provisioned SYSTEM
+  # library (libcurl + its TLS backend via pkg-config), which the bare `gate` job
+  # never installs, AND its compatibility-floor proof is a LIVE `https://` fetch
+  # needing network egress. The pure SEAM + hash-verify THESIS run in the core
+  # `gate` (src/networking.zig, no system dep, no network); this leg proves the
+  # BOUND stack: it fetches one ordinary https resource through libcurl+TLS (never
+  # hand-written TLS) and hash-verifies a content-addressed fetch over the same
+  # bound transport. `-Dnetworking-live` opts the live legs in.
+  networking:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Zig
+        # Empty version => resolved from build.zig.zon's minimum_zig_version.
+        uses: mlugg/setup-zig@v2
+
+      - name: Install the networking spike's system dependency (libcurl + TLS)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libcurl4-openssl-dev
+
+      - name: Run the networking fetch+verify spike (NOT in the core gate)
+        run: zig build -Dnetworking-live networking-fetch-test

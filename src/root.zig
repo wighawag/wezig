@@ -36,6 +36,17 @@ pub const paint = @import("paint.zig");
 /// `SystemWebviewRenderer` (in the shell exe) implements it on WebKitGTK.
 pub const renderer = @import("renderer.zig");
 
+/// The networking SEAM + content-address verifier (spec `explore-native-renderer`,
+/// story 2/6, decision 2): the boundary a future `WezigRenderer` /
+/// `explore-web3-capabilities` fetch through, plus the hash-verify THESIS
+/// ("content is trusted because it hashes to its address", ADR-0011). Pure Zig
+/// (std crypto), so its seam-contract + verify tests run in the display-free
+/// `zig build test` gate. The BOUND libcurl+TLS stack that satisfies the seam
+/// over the live network is `src/networking_spike.zig`, compiled ONLY by the
+/// dedicated `zig build networking-fetch-test` step (ADR-0007), NOT re-exported
+/// here (so libcurl never enters the library `mod` or the mobile cross-compiles).
+pub const networking = @import("networking.zig");
+
 /// The `ScriptEngine` seam (ADR-0013): the JavaScript-runtime boundary. Pure
 /// interface (no bound engine), making the JS-engine choice REVERSIBLE the same
 /// way the `Renderer` seam is — a BOUND engine (SpiderMonkey/JSC/V8, lean
@@ -167,6 +178,7 @@ test {
     _ = chrome_conformance;
     _ = renderer;
     _ = script_engine;
+    _ = networking;
     _ = android_renderer;
     _ = toolkit;
     _ = chrome;
