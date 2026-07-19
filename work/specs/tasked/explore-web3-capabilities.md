@@ -2,7 +2,6 @@
 title: Explore — native web3 capabilities (prove EIP-1193 + IPFS attach at the seam, decide the security model)
 slug: explore-web3-capabilities
 humanOnly: true
-needsAnswers: true
 taskedAfter: [explore-webview-shell]
 ---
 
@@ -10,18 +9,42 @@ taskedAfter: [explore-webview-shell]
 
 > **This is an EXPLORATION-scoped spec.** Its deliverable is CONFIDENCE + a de-risked plan for wezig's differentiators — NOT a finished wallet or a production IPFS stack. It proves that an EIP-1193 provider can be injected at the `Renderer` seam's script-bridge and round-trip ONE real call (`eth_requestAccounts`) on the webview backend, and that ONE `ipfs://` fetch+verify can be served through the interception hook, and it EVALUATES/RECOMMENDS the security-critical wallet model rather than building it. The actual wallet (key custody, signing UX, chains) and the production IPFS integration are follow-on BUILD specs, written once this exploration decides the model and proves the seam attachment. The security-critical build must not start on guesses.
 
-<!-- open-questions -->
+## Resolved decisions (the four open questions, answered by the human 2026-07-19)
 
-## Open questions
+The `needsAnswers` gate is CLEARED. The decisions are pinned in **ADR-0015** and
+grounded in `work/notes/findings/web3-origin-and-signature-ux-thesis-wighawag-blog.md`
+(the author's published web3-UX thesis). Reconciliation note: this spec was authored
+BEFORE the seam spikes landed; it has drifted FORWARD — prior exploration already
+de-risked much of it (the `Renderer` seam's two web3 hooks are proven; the
+content-address verify-half is built as `net.Fetcher` + `ContentAddress.verify`; the
+shell findings §4 already observed the process/sandbox model + the wallet-broker
+boundary). The tasks build ON that landed ground.
 
-These gate tasking this spec (`needsAnswers: true`). Exploration exists to answer them; the wallet ones are decided by evaluation, not by building.
-
-1. **Ethereum wallet security model** (was browser Q3, security-critical). Where and how are private keys stored (OS keychain, encrypted-at-rest, hardware-wallet support)? What is the signing/approval UX? Which chains beyond Ethereum mainnet? What exactly does the page-facing provider expose (EIP-1193 `request`, which RPC methods, the permission model)? The exploration EVALUATES and RECOMMENDS a model + threat analysis; it does NOT store a real key. Highest-judgement area in the project.
-2. **IPFS integration depth** (was browser Q2). What does "native IPFS" mean: embed a full node (Zig/Rust) in-process, bind an existing node (e.g. kubo) over its API, or resolve via a trusted gateway with content-hash verification? Is `ipns://` in scope alongside `ipfs://`? The exploration proves ONE resolution path end-to-end (fetch + hash-verify one CID) and recommends the depth.
-3. **Attachment at the `Renderer` seam.** Confirm the seam surface pinned by `explore-webview-shell` (script-message bridge + request-interception / custom-scheme hook) is sufficient for BOTH the webview backend AND `WezigRenderer`, by actually attaching to it in the spike. If it is not sufficient, that is a finding fed back to the seam.
-4. **Provider ↔ wallet process boundary.** Given the process/sandbox model observed by `explore-webview-shell`, where does key custody + signing run relative to the page-facing provider? A browser holding keys must not expose them to page/renderer processes. The exploration DEFINES this boundary as a decision before any key touches real code.
-
-<!-- /open-questions -->
+1. **Wallet security model (Q1).** Origin-keyed wallet; custody = **OS keychain
+   primary + encrypted-at-rest fallback (vetted crypto, never hand-rolled) +
+   hardware-wallet first-class**; **WebExtensions (MetaMask-compatible) wallet-compat
+   EVALUATED as a future path, not built** (a WebExtensions runtime is its own
+   subsystem). Provider advertised via **EIP-6963** (not bare `window.ethereum`);
+   method surface **split by risk** — signing/state-changing/disclosure methods
+   require explicit out-of-page approval and are **origin-bound** (EIP-712 origin
+   check), read-only (`eth_call`, …) is supported ungated; **multi-EVM-chain**;
+   **non-interactive (origin-bound + auth) signatures a first-class UX goal**. Full
+   threat analysis in ADR-0015.
+2. **IPFS depth (Q2).** Support **all** depths (verified-gateway / bound-node /
+   in-browser full node); **default to verified-gateway first**, in-browser node as
+   an option that may become the later default, and **always allow the user's own
+   external node**; **`ipns://` in scope**. The verify contract is identical across
+   depths.
+3. **Seam sufficiency (Q3).** The seam carries both capabilities, with **two
+   confirmed extensions fed back**: (a) **per-ORIGIN provider binding** — the wallet
+   link is keyed by content origin, so two tabs on the same origin SHARE a link and
+   different origins are independent (replaces the single hardcoded `"wezig"`
+   channel); (b) **scheme security traits** — `ipfs://` is registered as a **secure
+   origin (the strongest)** so it can host **service workers**.
+4. **Provider↔wallet boundary (Q4).** A **dedicated signing BROKER (own
+   process/sandbox)** holds keys + signs; the page-world provider only REQUESTS over
+   the bridge; the page never sees key material. Holds after the `WezigRenderer`
+   swap. The exploration **spikes the broker boundary** against a throwaway test key.
 
 ## Problem Statement
 
