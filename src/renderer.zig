@@ -146,9 +146,14 @@ pub const SchemeHandler = struct {
 /// Scope note (ADR-0016): being a secure origin is NECESSARY but NOT SUFFICIENT
 /// for service-worker HOSTING on stock WebKitGTK — that needs a SEPARATE
 /// backend-level protocol allowlist with no public knob, delivered by a carried
-/// fork patch (`spike-webkitgtk-sw-scheme-patch`), NOT by these traits. These
-/// traits are the clean, self-contained secure-origin declaration; they work on
-/// stock WebKitGTK (the origin IS treated as secure).
+/// fork patch (`spike-webkitgtk-sw-scheme-patch`). That SECOND gate is expressed
+/// at the seam by the `service_worker_capable` trait below (a DISTINCT trait, not
+/// implied by `secure`): the seam declares the capability uniformly so a
+/// `WezigRenderer` reproduces it natively, while the WebKitGTK backend maps it to
+/// the carried patch's opt-in (stubbed here until the deferred build-and-measure
+/// task, since stock WebKitGTK exports no such symbol). The secure/CORS/local
+/// traits work on stock WebKitGTK today; `service_worker_capable` is the one that
+/// needs the patched backend.
 pub const SchemeSecurityTraits = struct {
     /// Treat the scheme's origin as a SECURE context (like `https://`): powerful
     /// web platform features gated on secure context become available, and — on
@@ -161,6 +166,25 @@ pub const SchemeSecurityTraits = struct {
     /// Treat the scheme as LOCAL (like `file://`): restricted access rules apply.
     /// WebKitGTK: `webkit_security_manager_register_uri_scheme_as_local`.
     local: bool = false,
+    /// Permit the scheme's (secure) origin to HOST a service worker
+    /// (`navigator.serviceWorker.register()`), the SECOND gate ADR-0016 found:
+    /// distinct from `secure` (a secure origin is NECESSARY but NOT SUFFICIENT).
+    /// Opt-in and default-false — the embedder must set it explicitly, so this is
+    /// a targeted policy relaxation, not a blanket one.
+    ///
+    /// Backend honouring VARIES (ADR-0016 decision 5): a `WezigRenderer` owns its
+    /// scheme registry and reproduces this natively (no patch). The WebKitGTK
+    /// backend needs a carried FORK PATCH — stock WebKitGTK hard-rejects SW
+    /// registration on non-HTTP(S) schemes at the WebCore level with no public
+    /// API. The patch this spike sizes adds a
+    /// `webkit_security_manager_register_uri_scheme_as_service_worker_capable`
+    /// opt-in (mirroring `_as_secure`); until the patched build lands, the
+    /// `SystemWebviewRenderer` STUBS this trait (it must not call a symbol the
+    /// installed unpatched WebKitGTK does not export). See
+    /// `work/tasks/*/spike-webkitgtk-sw-scheme-patch-locate-and-draft/` for the
+    /// patch + upstream draft, and the deferred
+    /// `spike-webkitgtk-sw-scheme-patch-build-and-measure` for activation.
+    service_worker_capable: bool = false,
 };
 
 /// The `Renderer` seam value: a context pointer plus a function-pointer table,
@@ -620,6 +644,47 @@ test "Renderer seam: a registered custom scheme is served from native" {
     const resp = fr.serveSchemeRequest("wezig-test://hello").?;
     try std.testing.expectEqualStrings("<h1>hello from native</h1>", resp.body);
     try std.testing.expectEqualStrings("text/html", resp.content_type);
+}
+
+test "Renderer seam: the service_worker_capable trait is DECLARED at the seam (ipfs:// opts into SW hosting)" {
+    // ADR-0016: hosting a service worker on a non-HTTP(S) scheme is a SEPARATE
+    // gate from being a secure origin. The seam declares the CAPABILITY
+    // uniformly via a `service_worker_capable` trait so a `WezigRenderer`
+    // reproduces it natively (no patch) and the WebKitGTK backend maps it to the
+    // carried fork patch's opt-in. Proven headlessly here against the fake
+    // backend; the real backend wiring is activated by the deferred
+    // build-and-measure task.
+    var fr = FakeRenderer.init(std.testing.allocator);
+    defer fr.deinit();
+    const r = fr.renderer();
+
+    // A secure origin is NOT automatically SW-capable: the two traits are
+    // orthogonal (secure is necessary but not sufficient, ADR-0016). The
+    // default for an undeclared scheme is not SW-capable.
+    try std.testing.expect(fr.declared_traits == null);
+
+    r.declareSchemeSecurity("ipfs", .{ .secure = true, .cors = true, .service_worker_capable = true });
+
+    const traits = fr.declared_traits.?;
+    try std.testing.expect(traits.secure);
+    try std.testing.expect(traits.cors);
+    try std.testing.expect(!traits.local);
+    try std.testing.expect(traits.service_worker_capable);
+}
+
+test "Renderer seam: service_worker_capable defaults false (a secure origin is not automatically SW-capable)" {
+    // The trait is opt-in and independent of `secure`: declaring only secure+CORS
+    // must leave `service_worker_capable` false, mirroring ADR-0016's two-gate
+    // finding (secure origin NECESSARY but NOT SUFFICIENT for SW hosting).
+    var fr = FakeRenderer.init(std.testing.allocator);
+    defer fr.deinit();
+    const r = fr.renderer();
+
+    r.declareSchemeSecurity("ipfs", .{ .secure = true, .cors = true });
+
+    const traits = fr.declared_traits.?;
+    try std.testing.expect(traits.secure);
+    try std.testing.expect(!traits.service_worker_capable);
 }
 
 test "Renderer seam: a scheme's security traits are DECLARED at the seam (ipfs:// as a secure origin)" {

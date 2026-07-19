@@ -1,0 +1,226 @@
+Subject: [PATCH] Allow embedder-registered schemes to host service workers (GLib API opt-in)
+
+Widen the WebCore http/https gate in ServiceWorkerContainer::addRegistration so a
+secure origin whose scheme the EMBEDDER explicitly registered as SW-capable may
+host a service worker, and expose that opt-in through WebKitGTK's
+WebKitSecurityManager, mirroring the existing register_uri_scheme_as_secure /
+_is_secure surface. This is an OPT-IN policy relaxation (default-off), NOT a
+blanket one: only a scheme the app registered is admitted.
+
+Context: wezig ADR-0016 (github.com/wighawag/wezig). Corroborating demand:
+github.com/tauri-apps/tauri#13031 ("status: upstream").
+
+Sized/located against WebKit main (commit-agnostic; predicates verified 2026-07-19):
+  Source/WebCore/workers/service/ServiceWorkerContainer.cpp  (2 predicate widenings)
+  Source/WebCore/platform/LegacySchemeRegistry.{h,cpp}       (registry pair)
+  Source/WebKit/UIProcess/API/glib/WebKitSecurityManager.{h,cpp}  (GLib API glue)
+  Source/WebKit/UIProcess/WebProcessPool.{h,cpp}             (UI->Web IPC sync)
+  Source/WebKit/WebProcess/WebProcess.{messages.in,cpp}      (Web-process receiver)
+
+This is a LOCATE+SIZE draft against upstream paths (the dev box cannot build
+WebKitGTK; see the findings note). Line numbers are approximate; the two WebCore
+predicates and the mirrored GLib/registry/IPC layers are the load-bearing edits.
+The build-and-measure follow-on rebases this onto the exact tagged tree it builds.
+
+---
+ Source/WebCore/platform/LegacySchemeRegistry.h              |  4 ++++
+ Source/WebCore/platform/LegacySchemeRegistry.cpp            | 20 ++++++++++++++++++++
+ Source/WebCore/workers/service/ServiceWorkerContainer.cpp   |  4 ++--
+ Source/WebKit/UIProcess/API/glib/WebKitSecurityManager.h    | 12 ++++++++++++
+ Source/WebKit/UIProcess/API/glib/WebKitSecurityManager.cpp  | 46 ++++++++++++++++++++++++++++++++++++++++++++++
+ Source/WebKit/UIProcess/WebProcessPool.h                    |  2 ++
+ Source/WebKit/UIProcess/WebProcessPool.cpp                  | 12 ++++++++++++
+ Source/WebKit/WebProcess/WebProcess.messages.in             |  1 +
+ Source/WebKit/WebProcess/WebProcess.cpp                     |  6 ++++++
+ 9 files changed, 105 insertions(+), 2 deletions(-)
+
+diff --git a/Source/WebCore/workers/service/ServiceWorkerContainer.cpp b/Source/WebCore/workers/service/ServiceWorkerContainer.cpp
+--- a/Source/WebCore/workers/service/ServiceWorkerContainer.cpp
++++ b/Source/WebCore/workers/service/ServiceWorkerContainer.cpp
+@@ -196,7 +196,7 @@ void ServiceWorkerContainer::addRegistration(Variant<RefPtr<TrustedScriptURL>, S
+     RefPtr page = document ? document->page() : nullptr;
+     jobData.isFromServiceWorkerPage = page && page->isServiceWorkerPage();
+-    if (!jobData.scriptURL.protocolIsInHTTPFamily() && !jobData.isFromServiceWorkerPage) {
++    if (!jobData.scriptURL.protocolIsInHTTPFamily() && !jobData.isFromServiceWorkerPage && !LegacySchemeRegistry::shouldTreatURLSchemeAsServiceWorkerCapable(jobData.scriptURL.protocol())) {
+         CONTAINER_RELEASE_LOG_ERROR("addRegistration: Invalid scriptURL scheme is not HTTP or HTTPS");
+         promise->reject(Exception { ExceptionCode::TypeError, "serviceWorker.register() must be called with a script URL whose protocol is either HTTP or HTTPS"_s });
+         return;
+@@ -213,7 +213,7 @@ void ServiceWorkerContainer::addRegistration(Variant<RefPtr<TrustedScriptURL>, S
+     if (!options.scope.isEmpty())
+         jobData.scopeURL = context->encodingParseURL(options.scope);
+     else
+         jobData.scopeURL = URL(jobData.scriptURL, "./"_s);
+
+-    if (!jobData.scopeURL.isNull() && !jobData.scopeURL.protocolIsInHTTPFamily() && !jobData.isFromServiceWorkerPage) {
++    if (!jobData.scopeURL.isNull() && !jobData.scopeURL.protocolIsInHTTPFamily() && !jobData.isFromServiceWorkerPage && !LegacySchemeRegistry::shouldTreatURLSchemeAsServiceWorkerCapable(jobData.scopeURL.protocol())) {
+         CONTAINER_RELEASE_LOG_ERROR("addRegistration: scopeURL scheme is not HTTP or HTTPS");
+         promise->reject(Exception { ExceptionCode::TypeError, "Scope URL provided to serviceWorker.register() must be either HTTP or HTTPS"_s });
+         return;
+diff --git a/Source/WebCore/platform/LegacySchemeRegistry.h b/Source/WebCore/platform/LegacySchemeRegistry.h
+--- a/Source/WebCore/platform/LegacySchemeRegistry.h
++++ b/Source/WebCore/platform/LegacySchemeRegistry.h
+@@ -78,6 +78,10 @@ public:
+     WEBCORE_EXPORT static void registerURLSchemeAsCORSEnabled(const String& scheme);
+     WEBCORE_EXPORT static bool shouldTreatURLSchemeAsCORSEnabled(StringView scheme);
+     WEBCORE_EXPORT static Vector<String> allURLSchemesRegisteredAsCORSEnabled();
+
++    // Secure, embedder-registered schemes that are permitted to host a service
++    // worker (opt-in; default none). See ServiceWorkerContainer::addRegistration.
++    WEBCORE_EXPORT static void registerURLSchemeAsServiceWorkerCapable(const String& scheme); // Thread safe.
++    WEBCORE_EXPORT static bool shouldTreatURLSchemeAsServiceWorkerCapable(StringView scheme); // Thread safe.
++
+     WEBCORE_EXPORT static void registerURLSchemeAsHandledBySchemeHandler(const String&);
+     WEBCORE_EXPORT static bool schemeIsHandledBySchemeHandler(StringView);
+diff --git a/Source/WebCore/platform/LegacySchemeRegistry.cpp b/Source/WebCore/platform/LegacySchemeRegistry.cpp
+--- a/Source/WebCore/platform/LegacySchemeRegistry.cpp
++++ b/Source/WebCore/platform/LegacySchemeRegistry.cpp
+@@ -0,0 +0,0 @@ namespace WebCore {
++static URLSchemesMap& serviceWorkerCapableSchemes()
++{
++    static NeverDestroyed<URLSchemesMap> schemes;
++    return schemes;
++}
++
++void LegacySchemeRegistry::registerURLSchemeAsServiceWorkerCapable(const String& scheme)
++{
++    if (scheme.isNull())
++        return;
++    Locker locker { schemeRegistryLock };
++    serviceWorkerCapableSchemes().add(scheme);
++}
++
++bool LegacySchemeRegistry::shouldTreatURLSchemeAsServiceWorkerCapable(StringView scheme)
++{
++    if (scheme.isEmpty())
++        return false;
++    Locker locker { schemeRegistryLock };
++    return serviceWorkerCapableSchemes().contains<StringViewHashTranslator>(scheme);
++}
++
+diff --git a/Source/WebKit/UIProcess/API/glib/WebKitSecurityManager.h b/Source/WebKit/UIProcess/API/glib/WebKitSecurityManager.h
+--- a/Source/WebKit/UIProcess/API/glib/WebKitSecurityManager.h
++++ b/Source/WebKit/UIProcess/API/glib/WebKitSecurityManager.h
+@@ -0,0 +0,0 @@ webkit_security_manager_uri_scheme_is_cors_enabled              (WebKitSecurityManager *security_manager,
+                                                                  const gchar           *scheme);
+
++WEBKIT_API void
++webkit_security_manager_register_uri_scheme_as_service_worker_capable (WebKitSecurityManager *security_manager,
++                                                                       const gchar           *scheme);
++
++WEBKIT_API gboolean
++webkit_security_manager_uri_scheme_is_service_worker_capable          (WebKitSecurityManager *security_manager,
++                                                                       const gchar           *scheme);
++
+ WEBKIT_API void
+ webkit_security_manager_register_uri_scheme_as_empty_document   (WebKitSecurityManager *security_manager,
+                                                                  const gchar           *scheme);
+diff --git a/Source/WebKit/UIProcess/API/glib/WebKitSecurityManager.cpp b/Source/WebKit/UIProcess/API/glib/WebKitSecurityManager.cpp
+--- a/Source/WebKit/UIProcess/API/glib/WebKitSecurityManager.cpp
++++ b/Source/WebKit/UIProcess/API/glib/WebKitSecurityManager.cpp
+@@ -0,0 +0,0 @@ typedef enum {
+     SecurityPolicySecure,
+     SecurityPolicyCORSEnabled,
+-    SecurityPolicyEmptyDocument
++    SecurityPolicyEmptyDocument,
++    SecurityPolicyServiceWorkerCapable
+ } SecurityPolicy;
+@@ -0,0 +0,0 @@ static void registerSecurityPolicyForURIScheme(WebKitSecurityManager* manager, c
+     case SecurityPolicyEmptyDocument:
+         WebCore::LegacySchemeRegistry::registerURLSchemeAsEmptyDocument(urlScheme);
+         processPool->registerURLSchemeAsEmptyDocument(urlScheme);
+         break;
++    case SecurityPolicyServiceWorkerCapable:
++        WebCore::LegacySchemeRegistry::registerURLSchemeAsServiceWorkerCapable(urlScheme);
++        processPool->registerURLSchemeAsServiceWorkerCapable(urlScheme);
++        break;
+     }
+ }
+@@ -0,0 +0,0 @@ static bool checkSecurityPolicyForURIScheme(const char* scheme, SecurityPolicy p
+     case SecurityPolicyEmptyDocument:
+         return WebCore::LegacySchemeRegistry::shouldLoadURLSchemeAsEmptyDocument(urlScheme);
++    case SecurityPolicyServiceWorkerCapable:
++        return WebCore::LegacySchemeRegistry::shouldTreatURLSchemeAsServiceWorkerCapable(urlScheme);
+     }
+     return false;
+ }
+@@ -0,0 +0,0 @@ gboolean webkit_security_manager_uri_scheme_is_cors_enabled(WebKitSecurityManage
+     return checkSecurityPolicyForURIScheme(scheme, SecurityPolicyCORSEnabled);
+ }
+
++/**
++ * webkit_security_manager_register_uri_scheme_as_service_worker_capable:
++ * @security_manager: a #WebKitSecurityManager
++ * @scheme: a URI scheme
++ *
++ * Register @scheme as a service-worker-capable scheme.
++ *
++ * This means that a secure origin using this scheme may host a service worker
++ * (navigator.serviceWorker.register()), which is otherwise restricted to HTTP
++ * and HTTPS. The scheme should already be registered as secure.
++ *
++ * Since: 2.NN
++ */
++void webkit_security_manager_register_uri_scheme_as_service_worker_capable(WebKitSecurityManager* manager, const char* scheme)
++{
++    g_return_if_fail(WEBKIT_IS_SECURITY_MANAGER(manager));
++    g_return_if_fail(scheme);
++    registerSecurityPolicyForURIScheme(manager, scheme, SecurityPolicyServiceWorkerCapable);
++}
++
++/**
++ * webkit_security_manager_uri_scheme_is_service_worker_capable:
++ * @security_manager: a #WebKitSecurityManager
++ * @scheme: a URI scheme
++ *
++ * Whether @scheme is considered as a service-worker-capable scheme.
++ *
++ * Returns: %TRUE if @scheme can host a service worker or %FALSE otherwise.
++ *
++ * Since: 2.NN
++ */
++gboolean webkit_security_manager_uri_scheme_is_service_worker_capable(WebKitSecurityManager* manager, const char* scheme)
++{
++    g_return_val_if_fail(WEBKIT_IS_SECURITY_MANAGER(manager), FALSE);
++    g_return_val_if_fail(scheme, FALSE);
++    return checkSecurityPolicyForURIScheme(scheme, SecurityPolicyServiceWorkerCapable);
++}
++
+diff --git a/Source/WebKit/UIProcess/WebProcessPool.h b/Source/WebKit/UIProcess/WebProcessPool.h
+--- a/Source/WebKit/UIProcess/WebProcessPool.h
++++ b/Source/WebKit/UIProcess/WebProcessPool.h
+@@ -0,0 +0,0 @@ public:
+     void registerURLSchemeAsCORSEnabled(const String&);
++    void registerURLSchemeAsServiceWorkerCapable(const String&);
+diff --git a/Source/WebKit/UIProcess/WebProcessPool.cpp b/Source/WebKit/UIProcess/WebProcessPool.cpp
+--- a/Source/WebKit/UIProcess/WebProcessPool.cpp
++++ b/Source/WebKit/UIProcess/WebProcessPool.cpp
+@@ -0,0 +0,0 @@ void WebProcessPool::registerURLSchemeAsCORSEnabled(const String& urlScheme)
+     sendToAllProcesses(Messages::WebProcess::RegisterURLSchemeAsCORSEnabled(urlScheme));
+ }
+
++void WebProcessPool::registerURLSchemeAsServiceWorkerCapable(const String& urlScheme)
++{
++    m_schemesToRegisterAsServiceWorkerCapable.add(urlScheme);
++    sendToAllProcesses(Messages::WebProcess::RegisterURLSchemeAsServiceWorkerCapable(urlScheme));
++}
++
+diff --git a/Source/WebKit/WebProcess/WebProcess.messages.in b/Source/WebKit/WebProcess/WebProcess.messages.in
+--- a/Source/WebKit/WebProcess/WebProcess.messages.in
++++ b/Source/WebKit/WebProcess/WebProcess.messages.in
+@@ -0,0 +0,0 @@
+     RegisterURLSchemeAsCORSEnabled(String scheme)
++    RegisterURLSchemeAsServiceWorkerCapable(String scheme)
+diff --git a/Source/WebKit/WebProcess/WebProcess.cpp b/Source/WebKit/WebProcess/WebProcess.cpp
+--- a/Source/WebKit/WebProcess/WebProcess.cpp
++++ b/Source/WebKit/WebProcess/WebProcess.cpp
+@@ -0,0 +0,0 @@ void WebProcess::registerURLSchemeAsCORSEnabled(const String& urlScheme)
+     LegacySchemeRegistry::registerURLSchemeAsCORSEnabled(urlScheme);
+ }
+
++void WebProcess::registerURLSchemeAsServiceWorkerCapable(const String& urlScheme)
++{
++    LegacySchemeRegistry::registerURLSchemeAsServiceWorkerCapable(urlScheme);
++}
++
+-- 
+2.x (locate+size draft; rebase onto the built tag in the build-and-measure spike)

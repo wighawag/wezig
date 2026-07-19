@@ -203,6 +203,27 @@ pub const SystemWebviewRenderer = struct {
         if (traits.secure) c.webkit_security_manager_register_uri_scheme_as_secure(mgr, scheme);
         if (traits.cors) c.webkit_security_manager_register_uri_scheme_as_cors_enabled(mgr, scheme);
         if (traits.local) c.webkit_security_manager_register_uri_scheme_as_local(mgr, scheme);
+        // TODO(spike-webkitgtk-sw-scheme-patch-build-and-measure): honour
+        // `traits.service_worker_capable` here once the carried WebKitGTK fork
+        // patch is built. The patch adds an opt-in
+        //   webkit_security_manager_register_uri_scheme_as_service_worker_capable(mgr, scheme)
+        // (mirroring `_as_secure`, feeding a
+        //  LegacySchemeRegistry::registerURLSchemeAsServiceWorkerCapable that
+        //  widens the http/https gate in
+        //  ServiceWorkerContainer::addRegistration for BOTH scriptURL + scopeURL).
+        // The INSTALLED, UNPATCHED WebKitGTK 6.0 header exports NO such symbol
+        // (see /usr/include/webkitgtk-6.0/webkit/WebKitSecurityManager.h), so we
+        // MUST NOT reference it here — doing so would fail to link and break
+        // `zig build shell`. Stubbed to a no-op so the seam declaration is
+        // accepted but has no backend effect on stock WebKitGTK (matching
+        // ADR-0016 decision 5: the seam declares the trait uniformly; whether a
+        // backend can HONOUR it varies). The patch + upstream draft this stub
+        // waits on live in the
+        // spike-webkitgtk-sw-scheme-patch-locate-and-draft task sidecar.
+        if (traits.service_worker_capable) {
+            // Intentionally no-op on the unpatched backend. Activated by the
+            // deferred build-and-measure task against a patched libwebkitgtk.
+        }
     }
 
     /// Whether WebKitGTK's `WebKitSecurityManager` currently treats `scheme` as a
