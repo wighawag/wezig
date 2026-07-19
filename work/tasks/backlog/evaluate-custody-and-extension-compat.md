@@ -3,7 +3,7 @@ title: Evaluate wallet custody options + WebExtensions wallet-compat + non-inter
 slug: evaluate-custody-and-extension-compat
 spec: explore-web3-capabilities
 blockedBy: []
-covers: [1]
+covers: [3]
 ---
 
 ## What to build

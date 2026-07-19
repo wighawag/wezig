@@ -3,7 +3,7 @@ title: Pin the content-addressed origin model (ENS→IPFS) + the per-origin wall
 slug: pin-content-origin-and-wallet-link-model
 spec: explore-web3-capabilities
 blockedBy: []
-covers: [1, 3]
+covers: [5]
 ---
 
 ## What to build
@@ -40,6 +40,11 @@ extension, NOT the full wallet or storage subsystem.
 - [ ] The `Renderer`-seam per-origin provider binding is defined + expressed at the
       seam (replacing the single hardcoded channel), so it survives the
       `WezigRenderer` swap; consistency with `chrome_conformance` preserved.
+- [ ] CONFIRMS the pinned `Renderer` seam is sufficient for the web3 capabilities
+      across BOTH backends (webview + future `WezigRenderer`) and RECORDS any
+      insufficiency as feedback (the per-origin binding + the scheme-security-traits
+      extension from `spike-ipfs-secure-origin-service-worker` are the known ones),
+      per spec story 5.
 - [ ] Tests cover the data model + the binding lookup (same-origin-shares /
       cross-origin-isolates) per the repo's test style; the v0 gate stays green. If
       the model persists to a shared/global location, tests isolate it to a temp dir

@@ -3,7 +3,7 @@ title: Spike ipfs:// as a first-class secure origin — fetch+verify one CID and
 slug: spike-ipfs-secure-origin-service-worker
 spec: explore-web3-capabilities
 blockedBy: []
-covers: [2]
+covers: [2, 4]
 ---
 
 ## What to build
@@ -42,9 +42,10 @@ subsystem.
       service worker, proven end-to-end.
 - [ ] The seam extension (scheme security traits) is expressed at the `Renderer`
       seam so a `WezigRenderer` must reproduce it, not as a one-off webview call.
-- [ ] The findings note records the IPFS depth ladder (verified-gateway default →
-      bound node → in-browser node; user's own node always allowed; `ipns://` in
-      scope) per ADR-0015 decision 6.
+- [ ] The findings note records the IPFS depth ladder AS THE STORY-4 DEPTH
+      RECOMMENDATION (verified-gateway default → bound node → in-browser node; user's
+      own node always allowed; `ipns://` in scope), BACKED BY the one proven
+      resolution path this task exercises, per ADR-0015 decision 6 (spec story 4).
 - [ ] The verify/seam-contract half runs in the display-free `zig build test` gate
       (fake fetcher + fake scheme handler); the live webview service-worker leg is a
       dedicated off-core-gate step/CI leg (ADR-0007). The v0 gate stays green.
