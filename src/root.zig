@@ -80,6 +80,24 @@ pub const renderer_swap = @import("renderer_swap.zig");
 /// storage, or encryption subsystem.
 pub const web3_origin = @import("web3_origin.zig");
 
+/// The `ipfs://` fetch+verify glue that serves ONE content-addressed CID THROUGH
+/// the `Renderer` seam's custom-scheme interception hook (spec
+/// `explore-web3-capabilities`, stories 2 + 4; ADR-0015 decisions 6 + 7;
+/// ADR-0011): the narrowest real case of native content-addressed resolution.
+/// Reuses `net.Fetcher` + `ContentAddress.verify` (`networking.zig`) to fetch a
+/// CID's bytes from an untrusted gateway and HASH-VERIFY them locally (reject on
+/// mismatch), then serve the verified bytes as a `renderer.SchemeResponse`; and
+/// declares `ipfs://` a SECURE origin at the seam (`declareSchemeSecurity`).
+/// Pure Zig behind the `Fetcher` + `Renderer` seams (imports only
+/// `networking.zig`/`renderer.zig`, no webview/GTK binding), so the
+/// fetch-verify-through-the-hook + secure-origin-declaration proofs run in the
+/// display-free `zig build test` gate; the LIVE WebKitGTK `ipfs://` +
+/// `WebKitSecurityManager` secure-origin proof is the dedicated off-core-gate
+/// `ipfs-secure-origin-test` step + CI leg (ADR-0007), NOT re-exported here.
+/// SERVICE-WORKER HOSTING on `ipfs://` is OUT of scope (ADR-0016), delivered by
+/// the separate `spike-webkitgtk-sw-scheme-patch`.
+pub const ipfs_scheme = @import("ipfs_scheme.zig");
+
 /// The wallet BROKER boundary + the page-facing EIP-6963 provider spiked on ONE
 /// origin-bound `eth_requestAccounts` round-trip (spec `explore-web3-capabilities`
 /// story 1; ADR-0015 decisions 4 + 5; ADR-0011): de-risks the SECURITY BOUNDARY,
@@ -227,6 +245,7 @@ test {
     _ = docs;
     _ = chrome_conformance;
     _ = renderer;
+    _ = ipfs_scheme;
     _ = web3_origin;
     _ = wallet_broker;
     _ = wezig_renderer;

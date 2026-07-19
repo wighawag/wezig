@@ -191,6 +191,15 @@ pub fn build(b: *std.Build) void {
     //   - `shell-scheme-test` proves the seam's custom-scheme interception hook
     //                         (ADR-0005) serves a native body that renders
     //                         (`wezig-test://hello`).
+    //   - `ipfs-secure-origin-test` proves the SECURE-ORIGIN seam extension
+    //                         (ADR-0015 d.7): `ipfs://` declared secure THROUGH
+    //                         the seam is reported secure by WebKitGTK's
+    //                         `WebKitSecurityManager`, and a CID body served
+    //                         through the interception hook renders on it. The
+    //                         fetch+verify math + the seam CONTRACT run in the
+    //                         core gate (`renderer`/`ipfs_scheme`); this proves
+    //                         the WebKitGTK IMPL. SW-hosting is OUT of scope
+    //                         (ADR-0016), a SEPARATE task.
     // The seam-CONTRACT tests (both hooks exist + round-trip through a fake
     // backend) live in `renderer.zig`'s `zig build test` block; these prove the
     // real backend.
@@ -204,6 +213,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "shell-test", .exe_name = "wezig-shell-test", .mode = "smoke", .desc = "Headless WebKitGTK smoke test under Xvfb (needs xvfb-run; NOT in `test`)" },
         .{ .name = "shell-bridge-test", .exe_name = "wezig-shell-bridge-test", .mode = "bridge", .desc = "Headless script-message bridge proof under Xvfb (ADR-0005; NOT in `test`)" },
         .{ .name = "shell-scheme-test", .exe_name = "wezig-shell-scheme-test", .mode = "scheme", .desc = "Headless custom-scheme interception proof under Xvfb (ADR-0005; NOT in `test`)" },
+        .{ .name = "ipfs-secure-origin-test", .exe_name = "wezig-ipfs-secure-origin-test", .mode = "ipfs-secure", .desc = "Headless ipfs:// SECURE-ORIGIN seam-extension proof under Xvfb (ADR-0015 d.7; NOT in `test`)" },
     };
     for (verify_steps) |vs| {
         const vexe = shell_build.make(vs.exe_name, vs.mode);

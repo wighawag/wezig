@@ -131,6 +131,38 @@ pub const SchemeHandler = struct {
     onRequest: *const fn (ctx: *anyopaque, uri: []const u8) SchemeResponse,
 };
 
+/// A custom scheme's SECURITY TRAITS: how the origin a scheme serves is treated
+/// by the engine's security model, declared AT the seam so it is reproduced
+/// after the `WezigRenderer` swap (ADR-0015 decision 7; the two-layer finding
+/// `work/notes/findings/sw-fetch-vs-custom-scheme-interception-two-layers-2026-07-15.md`).
+/// These are a CONTEXT/security-layer concern distinct from serving a body
+/// (`SchemeHandler`, above): on WebKitGTK they map to `WebKitSecurityManager`'s
+/// `register_uri_scheme_as_secure` / `_as_cors_enabled` / `_as_local`, a
+/// DIFFERENT API from `webkit_web_context_register_uri_scheme`. Registering
+/// `ipfs://` as `.{ .secure = true }` makes it a first-class secure origin (its
+/// bytes are hash-verified — the STRONGEST origin, ADR-0011). All-false is the
+/// default (an ordinary, non-secure custom scheme).
+///
+/// Scope note (ADR-0016): being a secure origin is NECESSARY but NOT SUFFICIENT
+/// for service-worker HOSTING on stock WebKitGTK — that needs a SEPARATE
+/// backend-level protocol allowlist with no public knob, delivered by a carried
+/// fork patch (`spike-webkitgtk-sw-scheme-patch`), NOT by these traits. These
+/// traits are the clean, self-contained secure-origin declaration; they work on
+/// stock WebKitGTK (the origin IS treated as secure).
+pub const SchemeSecurityTraits = struct {
+    /// Treat the scheme's origin as a SECURE context (like `https://`): powerful
+    /// web platform features gated on secure context become available, and — on
+    /// a backend that also allowlists the protocol — service workers can be
+    /// hosted. WebKitGTK: `webkit_security_manager_register_uri_scheme_as_secure`.
+    secure: bool = false,
+    /// Allow cross-origin resource sharing to the scheme's origin. WebKitGTK:
+    /// `webkit_security_manager_register_uri_scheme_as_cors_enabled`.
+    cors: bool = false,
+    /// Treat the scheme as LOCAL (like `file://`): restricted access rules apply.
+    /// WebKitGTK: `webkit_security_manager_register_uri_scheme_as_local`.
+    local: bool = false,
+};
+
 /// The `Renderer` seam value: a context pointer plus a function-pointer table,
 /// exactly like `PaintBackend` (ADR-0002). Construct a backend, obtain this
 /// value from it, and hand it to the chrome; the chrome talks only to these
@@ -189,6 +221,20 @@ pub const Renderer = struct {
         /// for it is served by `handler` from native code. At most one handler
         /// per scheme.
         registerScheme: *const fn (ctx: *anyopaque, scheme: [*:0]const u8, handler: SchemeHandler) void,
+        /// Declare the SECURITY TRAITS of the custom URI scheme `scheme`
+        /// (secure / CORS / local) at the SEAM, so `ipfs://` can be registered
+        /// as a secure origin and a `WezigRenderer` reproduces it (ADR-0015
+        /// decision 7). This is a SIBLING to `registerScheme`, not extra fields
+        /// on it: security traits are a distinct CONTEXT-layer concern (a
+        /// different backend API from the request callback — `WebKitSecurityManager`
+        /// vs the URI-scheme registration), and not every scheme declares them.
+        ///
+        /// OPTIONAL on the vtable (`?...`): a backend that cannot honour scheme
+        /// security traits leaves it null (ADR-0016 decision 5 — the seam
+        /// expresses the declaration UNIFORMLY, but whether a given backend can
+        /// honour it varies). The `declareSchemeSecurity` forwarder no-ops when
+        /// the backend does not implement it, so callers stay backend-agnostic.
+        declareSchemeSecurity: ?*const fn (ctx: *anyopaque, scheme: [*:0]const u8, traits: SchemeSecurityTraits) void = null,
     };
 
     // Thin forwarders so callers write `renderer.navigate(...)` not
@@ -235,6 +281,12 @@ pub const Renderer = struct {
     pub fn registerScheme(self: Renderer, scheme: [*:0]const u8, handler: SchemeHandler) void {
         self.vtable.registerScheme(self.ptr, scheme, handler);
     }
+    /// Declare `scheme`'s security traits at the seam (secure/CORS/local). A
+    /// no-op on a backend that does not implement the optional vtable method
+    /// (see `declareSchemeSecurity` on the VTable).
+    pub fn declareSchemeSecurity(self: Renderer, scheme: [*:0]const u8, traits: SchemeSecurityTraits) void {
+        if (self.vtable.declareSchemeSecurity) |f| f(self.ptr, scheme, traits);
+    }
 };
 
 // ---------------------------------------------------------------------------
@@ -270,6 +322,12 @@ pub const FakeRenderer = struct {
     /// The single registered custom scheme, if any.
     scheme_name: ?[]const u8 = null,
     scheme_handler: ?SchemeHandler = null,
+    /// The security traits last declared for a scheme via
+    /// `declareSchemeSecurity`, plus the scheme they were declared for (owned
+    /// copy). Null until a declaration is made — so a test can assert the
+    /// default (undeclared) state is distinguishable from an explicit all-false.
+    declared_scheme: ?[]const u8 = null,
+    declared_traits: ?SchemeSecurityTraits = null,
 
     pub fn init(gpa: std.mem.Allocator) FakeRenderer {
         return .{ .gpa = gpa };
@@ -282,6 +340,7 @@ pub const FakeRenderer = struct {
         if (self.msg_name) |s| self.gpa.free(s);
         if (self.last_evaluated) |s| self.gpa.free(s);
         if (self.scheme_name) |s| self.gpa.free(s);
+        if (self.declared_scheme) |s| self.gpa.free(s);
     }
 
     // --- test-only simulation of the page side of the two hooks ---
@@ -322,6 +381,7 @@ pub const FakeRenderer = struct {
         .setScriptMessageHandler = setScriptMessageHandler,
         .evaluateScript = evaluateScript,
         .registerScheme = registerScheme,
+        .declareSchemeSecurity = declareSchemeSecurity,
     };
 
     fn emit(self: *FakeRenderer, event: LifecycleEvent) void {
@@ -428,6 +488,13 @@ pub const FakeRenderer = struct {
         if (self.scheme_name) |s| self.gpa.free(s);
         self.scheme_name = self.gpa.dupe(u8, std.mem.span(scheme)) catch null;
         self.scheme_handler = handler;
+    }
+
+    fn declareSchemeSecurity(ctx: *anyopaque, scheme: [*:0]const u8, traits: SchemeSecurityTraits) void {
+        const self: *FakeRenderer = @ptrCast(@alignCast(ctx));
+        if (self.declared_scheme) |s| self.gpa.free(s);
+        self.declared_scheme = self.gpa.dupe(u8, std.mem.span(scheme)) catch null;
+        self.declared_traits = traits;
     }
 };
 
@@ -553,4 +620,79 @@ test "Renderer seam: a registered custom scheme is served from native" {
     const resp = fr.serveSchemeRequest("wezig-test://hello").?;
     try std.testing.expectEqualStrings("<h1>hello from native</h1>", resp.body);
     try std.testing.expectEqualStrings("text/html", resp.content_type);
+}
+
+test "Renderer seam: a scheme's security traits are DECLARED at the seam (ipfs:// as a secure origin)" {
+    // The secure-origin seam extension (ADR-0015 decision 7): the backend
+    // declares `ipfs://`'s security traits THROUGH the seam, so a `WezigRenderer`
+    // reproduces them (not a one-off webview call). Proven headlessly here
+    // against the fake backend; the real WebKitGTK `WebKitSecurityManager` wiring
+    // is proven off the core gate under Xvfb.
+    var fr = FakeRenderer.init(std.testing.allocator);
+    defer fr.deinit();
+    const r = fr.renderer();
+
+    // Before any declaration, the fake has recorded no traits (an undeclared
+    // scheme is an ordinary, non-secure origin — the default).
+    try std.testing.expect(fr.declared_traits == null);
+
+    r.declareSchemeSecurity("ipfs", .{ .secure = true, .cors = true });
+
+    try std.testing.expectEqualStrings("ipfs", fr.declared_scheme.?);
+    const traits = fr.declared_traits.?;
+    try std.testing.expect(traits.secure);
+    try std.testing.expect(traits.cors);
+    try std.testing.expect(!traits.local);
+}
+
+test "Renderer seam: declareSchemeSecurity is a no-op on a backend that does not implement it" {
+    // ADR-0016 decision 5: the seam expresses the declaration uniformly, but a
+    // backend that cannot honour scheme security traits leaves the optional
+    // vtable method null. The forwarder must then no-op (not crash), so callers
+    // stay backend-agnostic. Build a minimal renderer whose vtable omits the
+    // method and prove the forwarder is safe.
+    const Inert = struct {
+        fn navigate(_: *anyopaque, _: [*:0]const u8) void {}
+        fn reload(_: *anyopaque) void {}
+        fn stop(_: *anyopaque) void {}
+        fn goBack(_: *anyopaque) void {}
+        fn goForward(_: *anyopaque) void {}
+        fn canGoBack(_: *anyopaque) bool {
+            return false;
+        }
+        fn canGoForward(_: *anyopaque) bool {
+            return false;
+        }
+        var token: u8 = 0;
+        fn view(_: *anyopaque) ViewHandle {
+            return &token;
+        }
+        fn setViewportSize(_: *anyopaque, _: c_int, _: c_int) void {}
+        fn setLifecycleCallback(_: *anyopaque, _: LifecycleCallback) void {}
+        fn injectUserScript(_: *anyopaque, _: [*:0]const u8) void {}
+        fn setScriptMessageHandler(_: *anyopaque, _: [*:0]const u8, _: ScriptMessageCallback) void {}
+        fn evaluateScript(_: *anyopaque, _: [*:0]const u8) void {}
+        fn registerScheme(_: *anyopaque, _: [*:0]const u8, _: SchemeHandler) void {}
+        const vtable = Renderer.VTable{
+            .navigate = navigate,
+            .reload = reload,
+            .stop = stop,
+            .goBack = goBack,
+            .goForward = goForward,
+            .canGoBack = canGoBack,
+            .canGoForward = canGoForward,
+            .view = view,
+            .setViewportSize = setViewportSize,
+            .setLifecycleCallback = setLifecycleCallback,
+            .injectUserScript = injectUserScript,
+            .setScriptMessageHandler = setScriptMessageHandler,
+            .evaluateScript = evaluateScript,
+            .registerScheme = registerScheme,
+            // declareSchemeSecurity intentionally left at its null default.
+        };
+    };
+    var ctx: u8 = 0;
+    const r = Renderer{ .ptr = &ctx, .vtable = &Inert.vtable };
+    // Must not crash: the forwarder skips the null method.
+    r.declareSchemeSecurity("ipfs", .{ .secure = true });
 }

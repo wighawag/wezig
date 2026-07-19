@@ -70,6 +70,7 @@ pub const SystemWebviewRenderer = struct {
         .setScriptMessageHandler = setScriptMessageHandler,
         .evaluateScript = evaluateScript,
         .registerScheme = registerScheme,
+        .declareSchemeSecurity = declareSchemeSecurity,
     };
 
     fn navigate(ctx: *anyopaque, uri: [*:0]const u8) void {
@@ -183,6 +184,37 @@ pub const SystemWebviewRenderer = struct {
         self.scheme_handler = handler;
         const context = c.webkit_web_view_get_context(self.view);
         c.webkit_web_context_register_uri_scheme(context, scheme, @ptrCast(&onSchemeRequest), self, null);
+    }
+
+    /// Declare a scheme's SECURITY TRAITS (secure/CORS/local) on the view's
+    /// `WebKitSecurityManager` (ADR-0015 decision 7). This is the CONTEXT/security
+    /// layer — a DIFFERENT WebKitGTK API from `register_uri_scheme` (the request
+    /// callback): `webkit_web_context_get_security_manager` +
+    /// `..._register_uri_scheme_as_secure` / `_as_cors_enabled` / `_as_local`.
+    /// Registering `ipfs://` as secure makes it a first-class secure origin (its
+    /// bytes are hash-verified). NOTE (ADR-0016): this WORKS on stock WebKitGTK
+    /// (the origin IS treated as secure); it is NECESSARY but NOT SUFFICIENT for
+    /// service-worker hosting, which needs a separate backend patch and is OUT of
+    /// scope here.
+    fn declareSchemeSecurity(ctx: *anyopaque, scheme: [*:0]const u8, traits: seam.SchemeSecurityTraits) void {
+        const self: *SystemWebviewRenderer = @ptrCast(@alignCast(ctx));
+        const context = c.webkit_web_view_get_context(self.view);
+        const mgr = c.webkit_web_context_get_security_manager(context);
+        if (traits.secure) c.webkit_security_manager_register_uri_scheme_as_secure(mgr, scheme);
+        if (traits.cors) c.webkit_security_manager_register_uri_scheme_as_cors_enabled(mgr, scheme);
+        if (traits.local) c.webkit_security_manager_register_uri_scheme_as_local(mgr, scheme);
+    }
+
+    /// Whether WebKitGTK's `WebKitSecurityManager` currently treats `scheme` as a
+    /// SECURE origin. Used by the off-core-gate `ipfs-secure-origin-test` leg to
+    /// prove the seam's `declareSchemeSecurity` declaration reached the real
+    /// backend. The WebKit query lives HERE (the backend owns the WebKit `c`
+    /// translation unit); the shell proof asks through this method rather than
+    /// reaching into the view, keeping WebKitGTK confined to this file.
+    pub fn isSchemeSecure(self: *SystemWebviewRenderer, scheme: [*:0]const u8) bool {
+        const context = c.webkit_web_view_get_context(self.view);
+        const mgr = c.webkit_web_context_get_security_manager(context);
+        return c.webkit_security_manager_uri_scheme_is_secure(mgr, scheme) != 0;
     }
 
     /// `WebKitURISchemeRequestCallback`: ask the seam handler for the native body

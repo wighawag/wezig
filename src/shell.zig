@@ -95,6 +95,16 @@ const scheme_uri = "wezig-test://hello";
 /// (WebKit parsed the served HTML).
 const scheme_marker = "WEZIG-SCHEME-OK";
 
+/// The `ipfs://` secure-origin live proof (`zig build ipfs-secure-origin-test`):
+/// the scheme registered as a secure origin AT THE SEAM, the CID URI navigated,
+/// and the marker `<title>` the served body carries. The body is served through
+/// the SAME interception hook as the `wezig-test://` proof (this leg's job is
+/// the SECURE-ORIGIN half; the offline fetch+verify-through-the-hook proof is
+/// the core-gate `ipfs_scheme.zig` test).
+const ipfs_scheme_name = "ipfs";
+const ipfs_cid_uri = "ipfs://bafyLiveSecureOriginProof";
+const ipfs_marker = "WEZIG-IPFS-SECURE-OK";
+
 /// Errors the shell can report to its caller (the shell executable's `main`).
 pub const ShellError = error{
     /// GTK could not initialise (e.g. no display / no `$DISPLAY`, and no Xvfb).
@@ -121,6 +131,13 @@ pub const ShellError = error{
     /// The custom scheme was served, but the native body did not render (its
     /// `<title>` marker never reached the seam's `.title_changed` event).
     SchemeNotRendered,
+    /// After declaring `ipfs://` a SECURE origin at the seam, WebKitGTK's
+    /// `WebKitSecurityManager` did NOT report the scheme as secure — the
+    /// secure-origin trait declaration did not reach the real backend.
+    OriginNotSecure,
+    /// The verified CID body was declared secure but never served/rendered (its
+    /// `<title>` marker never reached the seam's `.title_changed` event).
+    IpfsCidNotServed,
 };
 
 // --- Interactive entrypoint (`zig build shell`) --------------------------
@@ -362,6 +379,107 @@ fn onSchemeTimeout(data: c.gpointer) callconv(.c) c.gboolean {
     const scheme: *Scheme = @ptrCast(@alignCast(data));
     scheme.result = if (!scheme.served) error.SchemeNotServed else error.SchemeNotRendered;
     c.g_main_loop_quit(scheme.loop);
+    return 0; // G_SOURCE_REMOVE
+}
+
+// --- ipfs:// secure-origin LIVE proof (`zig build ipfs-secure-origin-test`) --
+// The off-core-gate WebKitGTK leg (ADR-0007) for the secure-origin seam
+// extension: prove the real `WebKitSecurityManager` marks `ipfs://` secure when
+// the trait is declared THROUGH the seam (`Renderer.declareSchemeSecurity`), and
+// that a CID body served through the interception hook on that secure origin
+// renders. The fetch+verify math + the seam CONTRACT run in the core gate
+// (`renderer.zig` + `ipfs_scheme.zig`); this leg proves the WebKitGTK IMPL of
+// the secure-origin declaration. SERVICE-WORKER hosting is OUT of scope
+// (ADR-0016) — this leg does NOT call `serviceWorker.register()`.
+
+const IpfsSecure = struct {
+    loop: *c.GMainLoop,
+    /// Set true once the ipfs scheme handler ran (the body was served).
+    served: bool = false,
+    /// The `WebKitSecurityManager` verdict for `ipfs://`, sampled after the
+    /// declaration (proves the seam declaration reached the real backend).
+    reported_secure: bool = false,
+    result: ShellError!void = error.NoResult,
+};
+
+/// Prove the SECURE-ORIGIN seam extension (ADR-0015 decision 7) end-to-end
+/// through the real WebKitGTK backend, headless under Xvfb. Declares `ipfs://`
+/// secure via the `Renderer` seam's `declareSchemeSecurity`, asserts WebKitGTK's
+/// `WebKitSecurityManager` now reports the scheme secure, registers a native
+/// handler serving a marker CID body through the interception hook, navigates to
+/// the CID URI, and asserts the body rendered on the secure origin.
+pub fn ipfsSecureOriginTest(gpa: std.mem.Allocator) ShellError!void {
+    var toolkit = GtkToolkit.init() catch return error.GtkInit;
+    var view_renderer = SystemWebviewRenderer.init();
+    const r = view_renderer.renderer();
+
+    const loop = c.g_main_loop_new(null, 0) orelse return error.NoResult;
+    defer c.g_main_loop_unref(loop);
+
+    var state = IpfsSecure{ .loop = loop };
+
+    // Declare `ipfs://` a SECURE (+ CORS) origin THROUGH the seam, then sample
+    // the real `WebKitSecurityManager`: it must now report the scheme secure.
+    r.declareSchemeSecurity(ipfs_scheme_name, .{ .secure = true, .cors = true });
+    state.reported_secure = view_renderer.isSchemeSecure(ipfs_scheme_name);
+
+    // Serve a marker CID body through the interception hook on that origin.
+    r.registerScheme(ipfs_scheme_name, .{ .ctx = &state, .onRequest = onIpfsRequest });
+    r.setLifecycleCallback(.{ .ctx = &state, .onEvent = onIpfsEvent });
+
+    var chrome = Chrome.init(r, toolkit.toolkit());
+    chrome.build(ipfs_cid_uri);
+
+    _ = c.g_timeout_add_seconds(30, @ptrCast(&onIpfsTimeout), &state);
+    c.g_main_loop_run(loop);
+    _ = gpa;
+    return state.result;
+}
+
+/// The native handler for the ipfs secure-origin proof: serves a marker HTML
+/// body (the CID's "verified" content in the live leg; the actual hash-verify
+/// math is the core-gate `ipfs_scheme.zig` proof).
+fn onIpfsRequest(ctx: *anyopaque, uri: []const u8) wezig.renderer.SchemeResponse {
+    const state: *IpfsSecure = @ptrCast(@alignCast(ctx));
+    _ = uri;
+    state.served = true;
+    return .{
+        .body = "<html><head><title>" ++ ipfs_marker ++ "</title></head>" ++
+            "<body><h1>" ++ ipfs_marker ++ "</h1></body></html>",
+        .content_type = "text/html",
+    };
+}
+
+/// Lifecycle observer: the marker `<title>` arriving proves the body rendered on
+/// the secure `ipfs://` origin. The verdict also requires the security manager
+/// reported the scheme secure (the secure-origin declaration reached the
+/// backend) — else `OriginNotSecure`.
+fn onIpfsEvent(ctx: *anyopaque, event: wezig.renderer.LifecycleEvent) void {
+    const state: *IpfsSecure = @ptrCast(@alignCast(ctx));
+    switch (event) {
+        .title_changed => |title| {
+            if (std.mem.eql(u8, title, ipfs_marker)) {
+                state.result = if (!state.reported_secure)
+                    error.OriginNotSecure
+                else if (!state.served)
+                    error.IpfsCidNotServed
+                else {};
+                c.g_main_loop_quit(state.loop);
+            }
+        },
+        else => {},
+    }
+}
+
+fn onIpfsTimeout(data: c.gpointer) callconv(.c) c.gboolean {
+    const state: *IpfsSecure = @ptrCast(@alignCast(data));
+    state.result = if (!state.reported_secure)
+        error.OriginNotSecure
+    else if (!state.served)
+        error.IpfsCidNotServed
+    else
+        error.SchemeNotRendered;
+    c.g_main_loop_quit(state.loop);
     return 0; // G_SOURCE_REMOVE
 }
 

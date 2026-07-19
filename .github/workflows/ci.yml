@@ -55,7 +55,12 @@ jobs:
   # (`xvfb-run` needs `xauth`), then runs each `shell-*` step. These build the
   # shell executable (which links webkitgtk-6.0) and drive a real page through
   # the two seams under `xvfb-run` — proving the WebKitGTK backend, the
-  # script-message bridge, and the custom-scheme interception end-to-end.
+  # script-message bridge, and the custom-scheme interception end-to-end. It
+  # also runs `ipfs-secure-origin-test` (ADR-0015 d.7): `ipfs://` declared secure
+  # THROUGH the `Renderer` seam is reported secure by WebKitGTK's
+  # `WebKitSecurityManager`, and a CID body served through the interception hook
+  # renders on that secure origin. SERVICE-WORKER hosting on `ipfs://` is OUT of
+  # scope (ADR-0016) — delivered separately by `spike-webkitgtk-sw-scheme-patch`.
   webview:
     runs-on: ubuntu-latest
     steps:
@@ -86,6 +91,7 @@ jobs:
           zig build shell-test
           zig build shell-bridge-test
           zig build shell-scheme-test
+          zig build ipfs-secure-origin-test
 
   # The HarfBuzz text-shaping spike (ADR-0007, spec explore-native-renderer):
   # a DEDICATED leg, separate from the display-free `gate` above, for the SAME
