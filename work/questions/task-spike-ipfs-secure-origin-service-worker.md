@@ -67,3 +67,20 @@
 <!-- q4 fields: id=q4 kind=stuck -->
 
 **Your answer** (write below this line):
+
+## Q5
+
+**'task:spike-ipfs-secure-origin-service-worker' was bounced — how should we proceed?**
+
+> STALE PREMISE (load-bearing, hard-to-reverse): The task's acceptance criterion "a page served over `ipfs://` registers + runs ONE service worker, proven end-to-end" and its "'Done' = ... hosting one service worker over a secure `ipfs://` origin" rest on the two-layer finding's premise (`work/notes/findings/sw-fetch-vs-custom-scheme-interception-two-layers-2026-07-15.md`) that "whether content served by our native scheme interception can host a service worker is decided by how we register the scheme's SECURITY TRAITS (secure/CORS) at the same context layer." That premise is FALSE on the WebKitGTK backend as verified live on this dev box (WebKitGTK 6.0 / 2.52.3):
+>
+> - Registering `ipfs://` as a secure origin via `webkit_security_manager_register_uri_scheme_as_secure` (+ `_as_cors_enabled`) is NECESSARY but NOT SUFFICIENT. WebKit additionally hard-rejects `navigator.serviceWorker.register()` on any non-HTTP(S) scheme at the WebCore engine level (`Source/WebCore/workers/service/ServiceWorkerContainer.cpp` ~L194–200): the observed error is "serviceWorker.register() must be called with a script URL whose protocol is either HTTP or HTTPS".
+> - WebKitGTK 6.0 exposes NO public API to make a custom scheme service-worker-capable (`WebKitSecurityManager` covers only secure/CORS/local/no-access/display-isolated/empty-document; there is no Electron/Chromium-style `registerSchemeAsPrivileged`). So the blocker is un-reversible at the seam/backend level with the shipped API. Same limitation is tracked upstream for Tauri (github.com/tauri-apps/tauri#13031, "status: upstream"). Full detail: `work/notes/observations/webkitgtk-service-worker-hard-restricted-to-http-https-2026-07-19.md`.
+>
+> WHAT IS STILL TRUE / DELIVERABLE (unaffected by the drift): (a) fetch+verify one CID through `net.Fetcher`/`ContentAddress` served via the interception hook, and (b) the seam extension — declaring scheme security traits (`ipfs://` = secure origin) expressed at the `Renderer` seam so a `WezigRenderer` reproduces it. Both were implemented and passed the display-free `zig build test` gate before I reverted; the secure-origin declaration itself works (WebKit does treat the origin as secure — the ONLY thing that fails is the extra WebKit SW-protocol allowlist).
+>
+> SUGGESTED RE-SCOPE (for a human): Split this item. (1) Keep + land the deliverable half: fetch+verify one CID served through the hook + the `registerSchemeSecurityTraits` seam extension proven in the core gate (this is a clean, self-contained spike and de-risks the secure-origin seam extension, which is the ADR-0015 d.7 ask). (2) Re-frame the service-worker leg as a FINDING/DECISION, not an end-to-end proof on the webview backend: on WebKitGTK, hosting a SW on `ipfs://` is blocked by a WebCore protocol allowlist with no public knob, so the options are — (i) accept that on the webview backend `ipfs://` SW-hosting is not possible today and defer real SW hosting to the `WezigRenderer` (our own engine, where we control the SchemeRegistry) and/or an http(s) localhost-loopback shim (the workaround Tauri/others use), or (ii) upstream a WebKitGTK API to allowlist SW schemes. This is a DESIGN decision on ADR-0015 decision 7's feasibility per backend that a human should ratify before any SW-hosting code is written — it changes what "prove one SW on ipfs://" means and touches the ADR, so it must not be silently re-scoped in code.
+
+<!-- q5 fields: id=q5 kind=stuck -->
+
+**Your answer** (write below this line):
