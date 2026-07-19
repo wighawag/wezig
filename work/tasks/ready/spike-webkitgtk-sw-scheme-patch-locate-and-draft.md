@@ -4,6 +4,7 @@ slug: spike-webkitgtk-sw-scheme-patch-locate-and-draft
 spec: explore-web3-capabilities
 blockedBy: []
 covers: [2]
+needsAnswers: true
 ---
 
 ## What to build
