@@ -596,6 +596,32 @@ above — the exploration's "which are their own explorations" verdict:
   wallet needs, and at what compatibility ceiling." NATIVE-first means this pays
   for nothing now and EIP-6963 keeps it additive later (§5). NOT a wallet-build
   task.
+  - **On its charter from the start: a CAPABILITY-COMPOSITION consent model**
+    (`work/notes/ideas/capability-composition-extension-permissions-warn-on-dangerous-combination.md`).
+    This exploration must evaluate driving the install-time trust prompt by how
+    CAPABILITIES COMPOSE, NOT the flat Chrome/Firefox permission list. The
+    security-relevant fact is that danger lives in the CONJUNCTION of an
+    ACQUISITION capability (script injection / broad local/host access /
+    cross-origin read) and an EXFILTRATION capability (outbound network the page
+    lacks): no-network+no-inject is provably safe, network-only is safe, and only
+    their PRODUCT warrants a clear warning. This is ADR-0011's don't-trust-by-
+    default applied to extensions (safe-by-capabilities is VERIFIABLE; a
+    permission label is not) and cures the authorization-fatigue failure of the
+    flat prompt — the same anti-pattern the wallet UX thesis calls out.
+  - **This shapes the build-our-own-API-vs-reuse-Firefox question §5 left open.**
+    The `browser.*`/MV3 model is PERMISSION-based, not composition-based, so
+    wezig's consent lens is NOT a subset of the Firefox API — but the two are not
+    exclusive. The sweet spot for the follow-on to evaluate: REUSE most of the
+    `browser.*` API surface for COMPATIBILITY (so real extensions run) while
+    REPLACING the install-consent MODEL with wezig's capability-composition
+    analysis (map a manifest's declared permissions → wezig capabilities → run the
+    acquisition×exfiltration analysis → warn/no-warn). Open risks it must resolve:
+    ambiguous capabilities that are BOTH acquisition and exfiltration
+    (`declarativeNetRequest`/`webRequest`, native messaging, `downloads`),
+    false-SAFE misclassification when mapping Firefox permissions, whether a
+    first-class wezig extension manifest is worth defining alongside the compat
+    import path, and where a wallet extension (which sees signing traffic) lands
+    in the grid.
 - **`spike-webkitgtk-sw-scheme-patch` (the `ipfs://` SW-hosting fork spike;
   ADR-0016).** The heavy, time-boxed spike that PROVES the minimal WebKitGTK fork
   patch hosts one SW on a secure `ipfs://` page end-to-end AND MEASURES its
