@@ -2,7 +2,7 @@
 title: Web3-capabilities exploration findings + de-risked, sliced build plan (the confidence deliverable)
 slug: web3-capabilities-findings-and-build-plan
 spec: explore-web3-capabilities
-blockedBy: [spike-wallet-broker-eip6963-provider, spike-ipfs-secure-origin-service-worker, pin-content-origin-and-wallet-link-model, evaluate-custody-and-extension-compat]
+blockedBy: [spike-wallet-broker-eip6963-provider, spike-ipfs-fetch-verify-and-secure-origin-seam, pin-content-origin-and-wallet-link-model, evaluate-custody-and-extension-compat]
 covers: [6]
 ---
 
@@ -19,10 +19,17 @@ Synthesize from the four tasks:
   (`spike-wallet-broker-eip6963-provider`) — the page→broker→page round-trip, the
   broker's process/sandbox boundary, the EIP-6963 discovery shape, and what the
   spike revealed the `Renderer` seam still needed (if anything).
-- **`ipfs://` as a secure origin hosting a service worker, proven**
-  (`spike-ipfs-secure-origin-service-worker`) — the fetch+verify path, the
-  scheme-security-traits seam extension, and the IPFS depth ladder (verified-gateway
-  default → bound node → in-browser node; user's own node; `ipns://` in scope).
+- **`ipfs://` fetch+verify + the secure-origin scheme-security-traits seam
+  extension, proven** (`spike-ipfs-fetch-verify-and-secure-origin-seam`) — the
+  fetch+verify path, the scheme-security-traits seam extension, and the IPFS depth
+  ladder (verified-gateway default → bound node → in-browser node; user's own node;
+  `ipns://` in scope). NOTE (ADR-0016): service-worker HOSTING on `ipfs://` is NOT
+  provable on stock WebKitGTK (a WebCore http(s)-only allowlist with no public knob);
+  the plan records that SW-hosting is delivered via a carried WebKitGTK fork patch
+  (proposed upstream, not depended on) — the SEPARATE `spike-webkitgtk-sw-scheme-patch`
+  proves + costs it — with `WezigRenderer` the eventual restriction-free home. Fold
+  that finding + the fork-vs-defer-vs-shim decision into the build plan; do NOT block
+  this synthesis on the (heavy) fork spike running.
 - **The content origin + per-origin wallet-link model, pinned**
   (`pin-content-origin-and-wallet-link-model`) — the ENS→IPFS origin model, the
   ENS-repoint carry-forward flow, the per-origin (not per-tab) wallet link, and the
@@ -53,9 +60,12 @@ Synthesize from the four tasks:
 
 ## Blocked by
 
-- `spike-wallet-broker-eip6963-provider`, `spike-ipfs-secure-origin-service-worker`,
+- `spike-wallet-broker-eip6963-provider`, `spike-ipfs-fetch-verify-and-secure-origin-seam`,
   `pin-content-origin-and-wallet-link-model`, `evaluate-custody-and-extension-compat`
-  — this report synthesizes ALL the spike learnings, so it comes last.
+  — this report synthesizes ALL the spike learnings, so it comes last. (It also
+  REFERENCES `spike-webkitgtk-sw-scheme-patch` + ADR-0016 for the SW-hosting story
+  but does NOT block on that fork spike, which may run much later — fold its
+  decided direction into the plan from ADR-0016.)
 
 ## Prompt
 
