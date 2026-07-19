@@ -4,6 +4,7 @@ slug: spike-ipfs-secure-origin-service-worker
 spec: explore-web3-capabilities
 blockedBy: []
 covers: [2, 4]
+needsAnswers: true
 ---
 
 ## What to build
