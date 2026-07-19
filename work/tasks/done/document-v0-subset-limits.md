@@ -4,7 +4,6 @@ slug: document-v0-subset-limits
 spec: browser
 blockedBy: [css-parse-and-cascade, layout-block-inline]
 covers: [6]
-needsAnswers: true
 ---
 
 ## What to build
