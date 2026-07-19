@@ -304,6 +304,62 @@ pub fn build(b: *std.Build) void {
     // is what the CI leg runs. Force the option on for the step itself.
     net_spike_step.dependOn(&run_net_spike_tests.step);
 
+    // --- SPIKE: LIVE out-of-process wallet BROKER round-trip (ADR-0007, ADR-0015 d.5) ----
+    // De-risking spike (spec `explore-web3-capabilities`, story 1, ADR-0015
+    // decision 5): proves the wallet broker BOUNDARY is a REAL PROCESS boundary on
+    // the narrowest case — ONE origin-bound `eth_requestAccounts` round-trips from
+    // the parent (the page/provider side) to a SEPARATE broker child process that
+    // holds the THROWAWAY test key in its OWN address space, and back, over the
+    // child's stdio (the same JSON request/response LINE the in-process `Broker`
+    // seam uses). The key NEVER crosses the boundary — only the account address does.
+    //
+    // The provider↔broker MESSAGE CONTRACT + the round-trip run IN the display-free
+    // `zig build test` gate (src/wallet_broker.zig, a fake bridge + a fake broker,
+    // no process). THIS step compiles the LIVE half (src/wallet_broker_spike.zig →
+    // `ChildProcessBroker`) which SPAWNS a child broker executable
+    // (src/wallet_broker_child.zig), so — like the `networking`/`harfbuzz`/`webview`
+    // legs (ADR-0007) — it stays OFF the core gate and gets a DEDICATED CI leg
+    // (the `wallet-broker` job in ci.yml). The live legs are guarded by
+    // `-Dwallet-broker-live` (set by this step): with the flag off a bare `zig test`
+    // compiles+links and SKIPS the spawn, so nothing load-bearing depends on being
+    // able to spawn (the boundary CONTRACT is the gate's job).
+    //
+    // The child broker exe's PATH is injected as a build option so the spike knows
+    // what to spawn; the spike module is NOT re-exported from `src/root.zig`, so
+    // the child-spawn path never enters the library `mod` or the mobile builds.
+    const broker_child = b.addExecutable(.{
+        .name = "wezig-wallet-broker",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/wallet_broker_child.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "wezig", .module = mod }},
+        }),
+    });
+    const broker_child_install = b.addInstallArtifact(broker_child, .{});
+    const wallet_broker_live = b.option(
+        bool,
+        "wallet-broker-live",
+        "Run the wallet-broker spike's LIVE out-of-process round-trip (spawns a broker child); set by `zig build wallet-broker-roundtrip-test`",
+    ) orelse false;
+    const wb_opts = b.addOptions();
+    wb_opts.addOption(bool, "wallet_broker_live", wallet_broker_live);
+    // The path the spike spawns: the installed child broker executable.
+    wb_opts.addOption([]const u8, "broker_child_path", b.getInstallPath(.bin, broker_child.out_filename));
+    const wb_spike_mod = b.createModule(.{
+        .root_source_file = b.path("src/wallet_broker_spike.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "wezig", .module = mod }},
+    });
+    wb_spike_mod.addImport("build_options", wb_opts.createModule());
+    const wb_spike_tests = b.addTest(.{ .root_module = wb_spike_mod });
+    const run_wb_spike_tests = b.addRunArtifact(wb_spike_tests);
+    // The live round-trip needs the child exe installed before it spawns it.
+    run_wb_spike_tests.step.dependOn(&broker_child_install.step);
+    const wb_spike_step = b.step("wallet-broker-roundtrip-test", "SPIKE: one eth_requestAccounts round-trip through a SEPARATE broker PROCESS (ADR-0015 d.5; NOT in `test` — its own CI leg)");
+    wb_spike_step.dependOn(&run_wb_spike_tests.step);
+
     // --- SPIKE: page-facing GPU frame via wgpu-native (WebGPU) + EGL/GLES (WebGL) ----
     // De-risking spike (spec `explore-native-renderer`, story 3/6, decision 2):
     // proves the PAGE-FACING GPU path on the NATIVE renderer on the narrowest real

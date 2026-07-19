@@ -80,6 +80,23 @@ pub const renderer_swap = @import("renderer_swap.zig");
 /// storage, or encryption subsystem.
 pub const web3_origin = @import("web3_origin.zig");
 
+/// The wallet BROKER boundary + the page-facing EIP-6963 provider spiked on ONE
+/// origin-bound `eth_requestAccounts` round-trip (spec `explore-web3-capabilities`
+/// story 1; ADR-0015 decisions 4 + 5; ADR-0011): de-risks the SECURITY BOUNDARY,
+/// not the wallet. The `Broker` seam (`{ ptr, vtable }`, like `Renderer`) is the
+/// trusted custody+decide boundary — a `FakeBroker` holds a THROWAWAY test key
+/// and returns only the ACCOUNT ADDRESS, never key material; `PageProvider` is
+/// the trusted native glue that stamps the requesting content ORIGIN onto each
+/// request, crosses the boundary, records the grant on that origin's
+/// `web3_origin.WalletLink`, and replies into the page over the seam. Discovery
+/// is EIP-6963 (announce/request events), not `window.ethereum`. Pure Zig behind
+/// the `Renderer` + `Broker` seams (imports only `renderer.zig`/`web3_origin.zig`,
+/// no webview/GTK binding), so its seam-contract round-trip runs in the
+/// display-free `zig build test` gate; the LIVE out-of-process broker proof is
+/// `src/wallet_broker_spike.zig` via the dedicated `zig build
+/// wallet-broker-roundtrip-test` step + CI leg (ADR-0007), NOT re-exported here.
+pub const wallet_broker = @import("wallet_broker.zig");
+
 /// The `ScriptEngine` seam (ADR-0013): the JavaScript-runtime boundary. Pure
 /// interface (no bound engine), making the JS-engine choice REVERSIBLE the same
 /// way the `Renderer` seam is — a BOUND engine (SpiderMonkey/JSC/V8, lean
@@ -211,6 +228,7 @@ test {
     _ = chrome_conformance;
     _ = renderer;
     _ = web3_origin;
+    _ = wallet_broker;
     _ = wezig_renderer;
     _ = renderer_swap;
     _ = script_engine;

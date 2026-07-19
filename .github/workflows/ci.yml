@@ -145,6 +145,33 @@ jobs:
       - name: Run the networking fetch+verify spike (NOT in the core gate)
         run: zig build -Dnetworking-live networking-fetch-test
 
+  # The wallet-broker out-of-process round-trip spike (ADR-0007, ADR-0015 d.5,
+  # spec explore-web3-capabilities story 1): a DEDICATED leg, separate from the
+  # display-free `gate`, for the SAME reason the `networking`/`harfbuzz`/`webview`
+  # legs are separate. The discriminator here is NOT a system dep (the broker is
+  # pure Zig, no apt provisioning) but that its proof SPAWNS A LIVE CHILD PROCESS
+  # (the real broker sandbox boundary): the provider<->broker MESSAGE CONTRACT +
+  # the eth_requestAccounts round-trip run IN the core `gate` (src/wallet_broker.zig,
+  # a fake bridge + fake broker, no process); THIS leg proves the boundary is a
+  # REAL PROCESS boundary — one origin-bound eth_requestAccounts round-trips from
+  # the parent (page/provider side) to a SEPARATE broker child holding the
+  # THROWAWAY test key in its own address space, and back, over the child's stdio.
+  # The key never crosses; only the account address does. `-Dwallet-broker-live`
+  # opts the live spawn in (set by the step); with it off a bare run compiles+links
+  # and skips the spawn, so nothing load-bearing depends on being able to spawn.
+  wallet-broker:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Zig
+        # Empty version => resolved from build.zig.zon's minimum_zig_version.
+        uses: mlugg/setup-zig@v2
+
+      - name: Run the wallet-broker out-of-process round-trip spike (NOT in the core gate)
+        run: zig build -Dwallet-broker-live wallet-broker-roundtrip-test
+
   # The page-facing GPU spike (ADR-0007, spec explore-native-renderer story 3/6):
   # a DEDICATED leg, separate from the display-free `gate`, for the SAME reason the
   # `harfbuzz`/`networking`/`webview` legs are separate — it links provisioned GPU
