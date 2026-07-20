@@ -29,3 +29,13 @@
 <!-- q3 fields: id=q3 kind=stuck -->
 
 **Your answer** (write below this line):
+
+## Q4
+
+**'task:spike-webkitgtk-sw-scheme-patch-build-and-measure' was bounced — how should we proceed?**
+
+> Not task drift — the task premise is sound and the whole environment-independent + Zig side is DONE and green (patch rebased onto WebKitGTK 2.52.3, rebase friction measured, seam wiring activated behind `-Dsw-patch`, off-core-gate `ipfs-sw-hosting-test` leg landed, shipped `ipfs://` trait flipped, core gate + chrome_conformance + zig fmt all green, default unpatched shell still builds, working tree clean). Two acceptance criteria remain HARD-BLOCKED on a privileged action I cannot perform: building patched WebKitGTK from source needs a set of `-dev` packages this host lacks (libgcrypt20-dev, libgstreamer1.0-dev + libgstreamer-plugins-base1.0-dev, libseccomp-dev, libwpe-1.0-dev + libwpebackend-fdo-1.0-dev, libmanette-0.2-dev, libgbm-dev, libwoff-dev, libavif-dev, libjxl-dev, liblcms2-dev, libenchant-2-dev, libnotify-dev, libhyphen-dev, libopenjp2-7-dev, libsecret-1-dev, gperf, and more), and installing them requires root — `sudo` on this host is password-gated and the autonomous runner has no password. So (1) "patched WebKitGTK builds + build time recorded" and the live-run half of (2) "one live SW on a secure ipfs:// page proven by the off-core-gate step" and the build-time half of (3) "fork cost measured" cannot be closed autonomously; only rebase friction (the other half of 3), the host spec, and the whole seam/wiring/proof-leg side are done. Re-scope / unblock: a human with sudo on this exact host runs `work/tasks/ready/spike-webkitgtk-sw-scheme-patch-build-and-measure/build-patched-webkitgtk.sh` (the only privileged line is one `apt-get install`; the rest fetches+verifies+patches+configures+compiles into a private prefix that never overwrites the system lib, records build-time.txt, and runs `zig build ipfs-sw-hosting-test -Dsw-patch -Dsw-webkit-prefix=<prefix>` to PASS the live SW proof). After it prints the build time + the PASS line, append both to work/notes/findings/webkitgtk-sw-scheme-patch-rebased-and-wired-build-provisioning-blocked-2026-07-20.md and the last two criteria close. Alternatively, if a fully-provisioned autonomous build host (deps preinstalled OR passwordless sudo) is what "humanOnly/provisioned host" was meant to denote, provide that host and re-run this task there — the Zig side already landed here is unchanged and ready. Decision recorded (linked from the findings note): `-Dsw-patch`/`-Dsw-webkit-prefix` build-option pair (spike-only, default off, not release-wired) and the `ipfs://` shipped-trait flip.
+
+<!-- q4 fields: id=q4 kind=stuck -->
+
+**Your answer** (write below this line):
