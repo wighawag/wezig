@@ -88,3 +88,9 @@ home) stands — only the near-term "carry the fork" recommendation is downgrade
 "defer to `WezigRenderer`; keep the patch as reproducible evidence, not an adopted
 fork". No real custody/secret/release path is touched. `WezigRenderer` remains a
 separate, deferred, seam-gated build (ADR-0017).
+
+The reproducible EVIDENCE for this decision (the rebased WebKitGTK 2.52.3 patch,
+the one-shot build script, the build-time + host-spec measurements) lives in
+`docs/spikes/spike-webkitgtk-sw-scheme-patch-build-and-measure/`; the measurement
+narrative + the `ServiceWorkerFetchNotObserved` finding are in
+`work/notes/findings/webkitgtk-sw-scheme-patch-rebased-and-wired-build-provisioning-blocked-2026-07-20.md`.

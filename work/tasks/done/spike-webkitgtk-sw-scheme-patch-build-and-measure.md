@@ -5,8 +5,15 @@ humanOnly: true
 spec: explore-web3-capabilities
 blockedBy: [spike-webkitgtk-sw-scheme-patch-locate-and-draft]
 covers: [2]
-needsAnswers: true
 ---
+
+> **Outcome (2026-07-20):** patched WebKitGTK BUILT (57m) + fork cost measured;
+> `serviceWorker.register()` on `ipfs://` UNBLOCKED but full SW `fetch` NOT observed.
+> DECISION: defer `ipfs://` SW-hosting to `WezigRenderer`, keep the webview backend
+> with the feature accepted-degraded, do NOT carry the fork (**ADR-0018**). The
+> reproducible evidence (rebased patch, build script, measurements) lives in
+> `docs/spikes/spike-webkitgtk-sw-scheme-patch-build-and-measure/`; the narrative is
+> in `work/notes/findings/webkitgtk-sw-scheme-patch-rebased-and-wired-build-provisioning-blocked-2026-07-20.md`.
 
 ## What to build
 

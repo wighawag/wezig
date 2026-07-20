@@ -20,8 +20,8 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# The repo root is 4 levels up: work/tasks/ready/<slug>/ -> repo.
-REPO="$(cd "$HERE/../../../.." && pwd)"
+# The repo root is 3 levels up: docs/spikes/<slug>/ -> repo.
+REPO="$(cd "$HERE/../../.." && pwd)"
 WORK="${WEBKIT_SPIKE_WORK:-$HOME/.dorfl/webkit-spike-build}"
 SRC="$WORK/webkitgtk-2.52.3"
 BUILD="$WORK/build-2.52.3"
