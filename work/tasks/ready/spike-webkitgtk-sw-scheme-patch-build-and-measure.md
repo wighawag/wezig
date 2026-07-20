@@ -5,6 +5,7 @@ humanOnly: true
 spec: explore-web3-capabilities
 blockedBy: [spike-webkitgtk-sw-scheme-patch-locate-and-draft]
 covers: [2]
+needsAnswers: true
 ---
 
 ## What to build
