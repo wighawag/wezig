@@ -1,0 +1,11 @@
+date: 2026-07-20T05:25:37Z
+kernel: Linux nono 6.12.95+deb13-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.95-1 (2026-07-04) x86_64 GNU/Linux
+cpu: 16 cores, AMD Ryzen 7 PRO 6850U with Radeon Graphics
+ram: 30Gi total, 13Gi available
+disk(/): 146G free of 907G
+zig: 0.16.0
+cmake: cmake version 3.31.6
+ninja: 1.12.1
+ruby: ruby 3.3.8
+gcc: gcc (Debian 14.2.0-19) 14.2.0
+installed webkitgtk-6.0: 2.52.3

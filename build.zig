@@ -140,14 +140,38 @@ pub fn build(b: *std.Build) void {
     // small local helper builds the shell exe for a given mode so the four
     // steps stay identical except for that one option + (for the verify steps)
     // the `xvfb-run` wrapper.
+    // ADR-0016 decision 6, `spike-webkitgtk-sw-scheme-patch-build-and-measure`:
+    // `-Dsw-patch` links the shell against a PATCHED WebKitGTK that exports the
+    // carried fork patch's `webkit_security_manager_register_uri_scheme_as_
+    // service_worker_capable` opt-in, and ACTIVATES the seam wiring for the
+    // `service_worker_capable` trait (stubbed to a no-op otherwise). It is
+    // DEFAULT-OFF: the bare CI runner + the ordinary dev box have only the stock,
+    // UNPATCHED WebKitGTK (no such symbol), so the default build must NOT
+    // reference it. `-Dsw-webkit-prefix=<path>` points the include/lib/pkgconfig
+    // search at the patched install (built from source on a provisioned host);
+    // with it set the shell links the patched `libwebkitgtk` instead of the
+    // system one. Together they gate the SPIKE-only patched build so it is never
+    // wired into release/distribution (the default `zig build shell` /
+    // `.goreleaser.yaml` path is untouched).
+    const sw_patch = b.option(bool, "sw-patch", "Link the PATCHED WebKitGTK and activate the ipfs:// service-worker-capable seam wiring (spike-only; needs -Dsw-webkit-prefix; ADR-0016 d.6). Default off.") orelse false;
+    const sw_webkit_prefix = b.option([]const u8, "sw-webkit-prefix", "Install prefix of a patched WebKitGTK built from source (its include/lib are used instead of the system libwebkitgtk when set; pairs with -Dsw-patch).");
+
     const ShellBuild = struct {
         b: *std.Build,
         mod: *std.Build.Module,
         target: std.Build.ResolvedTarget,
         optimize: std.builtin.OptimizeMode,
+        sw_patch: bool,
+        sw_webkit_prefix: ?[]const u8,
         fn make(self: @This(), name: []const u8, mode: []const u8) *std.Build.Step.Compile {
             const opts = self.b.addOptions();
             opts.addOption([]const u8, "mode", mode);
+            // A COMPILE-TIME flag the `SystemWebviewRenderer` reads: when true it
+            // calls the patched WebKitSecurityManager opt-in for the
+            // `service_worker_capable` trait; when false it stays a no-op (the
+            // installed stock header exports no such symbol, so the call must be
+            // compiled out entirely on the default build).
+            opts.addOption(bool, "sw_patch", self.sw_patch);
             const e = self.b.addExecutable(.{
                 .name = name,
                 .root_module = self.b.createModule(.{
@@ -161,12 +185,23 @@ pub fn build(b: *std.Build) void {
             e.root_module.link_libc = true;
             // WebKitGTK's `@cImport` bridge (`src/webkit_c.h`) lives in `src/`.
             e.root_module.addIncludePath(self.b.path("src"));
+            // A patched WebKitGTK built from source lives under its own prefix
+            // (never overwriting the system lib): search its headers + libs FIRST
+            // so the shell binds the patched `webkit/WebKitSecurityManager.h`
+            // (which declares the new opt-in) and links the patched
+            // `libwebkitgtk-6.0`. Its `pkgconfig` also feeds the `.pc` resolution
+            // below via `PKG_CONFIG_PATH` (set by the build step's invocation).
+            if (self.sw_webkit_prefix) |prefix| {
+                e.root_module.addIncludePath(.{ .cwd_relative = self.b.fmt("{s}/include/webkitgtk-6.0", .{prefix}) });
+                e.root_module.addLibraryPath(.{ .cwd_relative = self.b.fmt("{s}/lib", .{prefix}) });
+                e.root_module.addRPath(.{ .cwd_relative = self.b.fmt("{s}/lib", .{prefix}) });
+            }
             // pkg-config resolves webkitgtk-6.0 + GTK4 + GLib headers and libs.
             e.root_module.linkSystemLibrary("webkitgtk-6.0", .{});
             return e;
         }
     };
-    const shell_build = ShellBuild{ .b = b, .mod = mod, .target = target, .optimize = optimize };
+    const shell_build = ShellBuild{ .b = b, .mod = mod, .target = target, .optimize = optimize, .sw_patch = sw_patch, .sw_webkit_prefix = sw_webkit_prefix };
 
     // The interactive shell executable (`zig build shell`).
     const shell_exe = shell_build.make("wezig-shell", "interactive");
@@ -223,6 +258,27 @@ pub fn build(b: *std.Build) void {
         run_v.expectExitCode(0);
         const step = b.step(vs.name, vs.desc);
         step.dependOn(&run_v.step);
+    }
+
+    // The PATCHED-WebKitGTK live service-worker-hosting proof
+    // (`zig build ipfs-sw-hosting-test -Dsw-patch -Dsw-webkit-prefix=...`,
+    // ADR-0016 decision 6, `spike-webkitgtk-sw-scheme-patch-build-and-measure`).
+    // This is the leg that stock WebKitGTK REJECTS: an `ipfs://` page served
+    // through the interception hook calls `serviceWorker.register('sw.js')`, the
+    // SW registers, activates, and its `fetch` handler runs — provable ONLY on
+    // the patched backend. It is DELIBERATELY OFF the core `zig build test` gate
+    // AND unavailable on the bare CI runner: it is registered ONLY when
+    // `-Dsw-patch` is set (which requires a patched `libwebkitgtk`), so a default
+    // `zig build` / `zig build test` never sees it and cannot try to run it
+    // against the unpatched system lib. Like the other WebKitGTK legs it runs
+    // under `xvfb-run` (no native headless mode; WebKit bug #76911).
+    if (sw_patch) {
+        const sw_exe = shell_build.make("wezig-ipfs-sw-hosting-test", "ipfs-sw");
+        const run_sw = b.addSystemCommand(&.{ "xvfb-run", "-a" });
+        run_sw.addArtifactArg(sw_exe);
+        run_sw.expectExitCode(0);
+        const sw_step = b.step("ipfs-sw-hosting-test", "PATCHED-WebKitGTK live proof: a service worker registers + its fetch runs on a secure ipfs:// page under Xvfb (spike-only, needs -Dsw-patch; ADR-0016 d.6; NOT in `test`)");
+        sw_step.dependOn(&run_sw.step);
     }
 
     // --- SPIKE: real text shaping via HarfBuzz behind the PaintBackend seam ----

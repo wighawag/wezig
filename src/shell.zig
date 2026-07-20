@@ -105,6 +105,27 @@ const ipfs_scheme_name = "ipfs";
 const ipfs_cid_uri = "ipfs://bafyLiveSecureOriginProof";
 const ipfs_marker = "WEZIG-IPFS-SECURE-OK";
 
+/// The `ipfs://` service-worker-HOSTING live proof
+/// (`zig build ipfs-sw-hosting-test -Dsw-patch`, ADR-0016 d.6): the leg stock
+/// WebKitGTK REJECTS. An `ipfs://` page (served through the interception hook,
+/// declared a secure + `service_worker_capable` origin at the seam) registers a
+/// service worker whose `fetch` handler synthesises a marker response; the page
+/// fetches a sentinel URL, the SW intercepts it, and the marker the SW returned
+/// reaches the page — proving the SW both REGISTERED and its `fetch` RAN. The
+/// SW script (`sw.js`) and the fetch sentinel are served through the SAME hook,
+/// so the whole flow is content-addressed (no network, deterministic offline).
+const ipfs_sw_origin = "ipfs://bafySwHostOrigin";
+const ipfs_sw_page_uri = ipfs_sw_origin ++ "/index.html";
+const ipfs_sw_script_uri = ipfs_sw_origin ++ "/sw.js";
+/// The URL the page fetches AFTER the SW controls it; the SW's `fetch` handler
+/// matches this and returns the marker, proving the handler ran (not the network
+/// or the interception hook — the hook never serves this path).
+const ipfs_sw_fetch_sentinel = ipfs_sw_origin ++ "/__sw_fetch_probe__";
+/// The marker the SW's `fetch` handler synthesises; the page reports it as its
+/// `<title>` once the SW-controlled fetch returns it. Distinct from any body the
+/// interception hook serves, so observing it PROVES the SW's `fetch` produced it.
+const ipfs_sw_marker = "WEZIG-IPFS-SW-FETCH-OK";
+
 /// Errors the shell can report to its caller (the shell executable's `main`).
 pub const ShellError = error{
     /// GTK could not initialise (e.g. no display / no `$DISPLAY`, and no Xvfb).
@@ -138,6 +159,18 @@ pub const ShellError = error{
     /// The verified CID body was declared secure but never served/rendered (its
     /// `<title>` marker never reached the seam's `.title_changed` event).
     IpfsCidNotServed,
+    /// After declaring `ipfs://` service-worker-capable at the seam, the patched
+    /// WebKitGTK's `WebKitSecurityManager` did NOT report the scheme SW-capable
+    /// — the trait declaration did not reach the patched backend (or the build
+    /// was not linked against the patched lib).
+    OriginNotServiceWorkerCapable,
+    /// The `ipfs://` page never signalled its service worker REGISTERED (the
+    /// `serviceWorker.register()` promise did not resolve to an active worker).
+    ServiceWorkerNotRegistered,
+    /// The service worker registered, but its `fetch` handler's marker response
+    /// never reached the page (the SW did not control the fetch, or its `fetch`
+    /// handler did not run) — the exact capability stock WebKitGTK rejects.
+    ServiceWorkerFetchNotObserved,
 };
 
 // --- Interactive entrypoint (`zig build shell`) --------------------------
@@ -479,6 +512,170 @@ fn onIpfsTimeout(data: c.gpointer) callconv(.c) c.gboolean {
         error.IpfsCidNotServed
     else
         error.SchemeNotRendered;
+    c.g_main_loop_quit(state.loop);
+    return 0; // G_SOURCE_REMOVE
+}
+
+// --- ipfs:// service-worker HOSTING live proof --------------------------------
+// (`zig build ipfs-sw-hosting-test -Dsw-patch -Dsw-webkit-prefix=...`,
+// ADR-0016 decision 6, `spike-webkitgtk-sw-scheme-patch-build-and-measure`.)
+//
+// The capability stock WebKitGTK REJECTS (observation
+// webkitgtk-service-worker-hard-restricted-to-http-https-2026-07-19): a secure
+// `ipfs://` page hosting a service worker. This leg proves it end-to-end on the
+// PATCHED backend: `ipfs://` is declared secure + `service_worker_capable`
+// THROUGH the seam (so the patched `WebKitSecurityManager` opt-in fires), a page
+// + its `sw.js` + a fetch sentinel are served through the interception hook, the
+// page registers the SW, waits for it to control the page, fetches the sentinel,
+// and the SW's `fetch` handler synthesises the marker the page reports back. It
+// uses the seam's script-message bridge (`window.wezig`) to signal progress, so
+// the verdict distinguishes "SW never registered" from "SW registered but its
+// fetch never ran". It is off the core gate and needs the patched lib (build.zig
+// only registers the step under `-Dsw-patch`).
+
+const IpfsSw = struct {
+    loop: *c.GMainLoop,
+    /// The patched `WebKitSecurityManager` verdict for `ipfs://`, sampled after
+    /// the `service_worker_capable` declaration (proves it reached the backend).
+    reported_sw_capable: bool = false,
+    /// Set once the page signalled `serviceWorker.register()` resolved to an
+    /// active, controlling worker.
+    sw_registered: bool = false,
+    /// Set once the page received the SW `fetch` handler's marker (the SW both
+    /// registered AND its fetch ran).
+    sw_fetch_observed: bool = false,
+    result: ShellError!void = error.NoResult,
+};
+
+/// Prove `ipfs://` service-worker HOSTING end-to-end on the PATCHED WebKitGTK,
+/// headless under Xvfb. Declares `ipfs://` secure + `service_worker_capable`
+/// through the seam, asserts the patched `WebKitSecurityManager` now reports the
+/// scheme SW-capable, serves the page + `sw.js` + fetch sentinel through the
+/// interception hook, and waits for the bridge to signal the SW registered and
+/// its `fetch` handler ran. Only meaningful on a `-Dsw-patch` build (the seam
+/// wiring is a no-op otherwise); build.zig only exposes the step there.
+pub fn ipfsSwHostingTest(gpa: std.mem.Allocator) ShellError!void {
+    var toolkit = GtkToolkit.init() catch return error.GtkInit;
+    var view_renderer = SystemWebviewRenderer.init();
+    const r = view_renderer.renderer();
+
+    const loop = c.g_main_loop_new(null, 0) orelse return error.NoResult;
+    defer c.g_main_loop_unref(loop);
+
+    var state = IpfsSw{ .loop = loop };
+
+    // Declare `ipfs://` secure + CORS + service-worker-capable THROUGH the seam,
+    // using the SHIPPED constant (so this proves exactly what release wires), then
+    // sample the patched `WebKitSecurityManager`: it must now report SW-capable.
+    r.declareSchemeSecurity(ipfs_scheme_name, wezig.ipfs_scheme.secure_origin_traits);
+    state.reported_sw_capable = view_renderer.isSchemeServiceWorkerCapable(ipfs_scheme_name);
+
+    // The page->native bridge: the page posts "registered" then "<marker>" via
+    // `window.wezig.*`; we translate those into the verdict. Injected + wired
+    // before navigation so the channel exists when the page runs.
+    r.injectUserScript(
+        "window.wezig = { signal: function(m){ window.webkit.messageHandlers.wezig.postMessage(m); } };",
+    );
+    r.setScriptMessageHandler("wezig", .{ .ctx = &state, .onMessage = onIpfsSwMessage });
+
+    // Serve the page, its `sw.js`, and (deliberately NOT) the fetch sentinel
+    // through the interception hook — the sentinel is answered by the SW's fetch
+    // handler, not the hook, so observing the marker proves the SW ran.
+    r.registerScheme(ipfs_scheme_name, .{ .ctx = &state, .onRequest = onIpfsSwRequest });
+    r.setLifecycleCallback(.{ .ctx = &state, .onEvent = onIpfsSwEvent });
+
+    var chrome = Chrome.init(r, toolkit.toolkit());
+    chrome.build(ipfs_sw_page_uri);
+
+    _ = c.g_timeout_add_seconds(60, @ptrCast(&onIpfsSwTimeout), &state);
+    c.g_main_loop_run(loop);
+    _ = gpa;
+    return state.result;
+}
+
+/// The interception hook for the SW-hosting proof. Serves the registering page
+/// and the SW script (`sw.js`); it does NOT serve the fetch sentinel (that is
+/// the SW's job). Bodies are `comptime`-constant, so the returned slices satisfy
+/// the seam's borrow contract (they outlive every call).
+fn onIpfsSwRequest(ctx: *anyopaque, uri: []const u8) wezig.renderer.SchemeResponse {
+    _ = ctx;
+    if (std.mem.endsWith(u8, uri, "/sw.js")) {
+        // The service worker: cache-first is irrelevant here; it just needs a
+        // `fetch` handler that answers the sentinel with the marker, proving the
+        // handler RAN. `clients.claim()` on activate so it controls the existing
+        // page without a reload.
+        return .{
+            .body = "self.addEventListener('install', function(e){ self.skipWaiting(); });\n" ++
+                "self.addEventListener('activate', function(e){ e.waitUntil(self.clients.claim()); });\n" ++
+                "self.addEventListener('fetch', function(e){\n" ++
+                "  if (e.request.url.indexOf('__sw_fetch_probe__') !== -1) {\n" ++
+                "    e.respondWith(new Response('" ++ ipfs_sw_marker ++ "', { headers: { 'Content-Type': 'text/plain' } }));\n" ++
+                "  }\n" ++
+                "});\n",
+            .content_type = "application/javascript",
+        };
+    }
+    // The page: register the SW, wait until it controls this page, fetch the
+    // sentinel, and post the SW-produced marker back to native. Signals
+    // "registered" as soon as registration resolves so the verdict can tell the
+    // two failure modes apart.
+    return .{
+        .body = "<html><head><title>ipfs-sw-host</title></head><body><script>\n" ++
+            "(async function(){\n" ++
+            "  try {\n" ++
+            "    const reg = await navigator.serviceWorker.register('sw.js');\n" ++
+            "    await navigator.serviceWorker.ready;\n" ++
+            "    window.wezig.signal('registered');\n" ++
+            "    // Wait until this page is actually controlled, then probe.\n" ++
+            "    for (let i = 0; i < 100 && !navigator.serviceWorker.controller; i++) {\n" ++
+            "      await new Promise(r => setTimeout(r, 100));\n" ++
+            "    }\n" ++
+            "    const res = await fetch('__sw_fetch_probe__');\n" ++
+            "    const text = await res.text();\n" ++
+            "    window.wezig.signal(text);\n" ++
+            "  } catch (err) {\n" ++
+            "    window.wezig.signal('error:' + err);\n" ++
+            "  }\n" ++
+            "})();\n" ++
+            "</script></body></html>",
+        .content_type = "text/html",
+    };
+}
+
+/// Page->native bridge messages for the SW-hosting proof: "registered" (the SW
+/// registration promise resolved) and the SW `fetch` marker (its handler ran).
+/// The verdict is reached when the marker arrives; "registered" alone lets the
+/// timeout distinguish "SW never ran fetch" from "SW never registered".
+fn onIpfsSwMessage(ctx: *anyopaque, name: []const u8, body: []const u8) void {
+    _ = name;
+    const state: *IpfsSw = @ptrCast(@alignCast(ctx));
+    if (std.mem.eql(u8, body, "registered")) {
+        state.sw_registered = true;
+    } else if (std.mem.eql(u8, body, ipfs_sw_marker)) {
+        state.sw_registered = true;
+        state.sw_fetch_observed = true;
+        state.result = if (!state.reported_sw_capable)
+            error.OriginNotServiceWorkerCapable
+        else {};
+        c.g_main_loop_quit(state.loop);
+    }
+}
+
+/// Lifecycle observer for the SW-hosting proof: only used to fail fast on a load
+/// error; the verdict itself comes through the bridge (`onIpfsSwMessage`).
+fn onIpfsSwEvent(ctx: *anyopaque, event: wezig.renderer.LifecycleEvent) void {
+    _ = ctx;
+    _ = event;
+}
+
+fn onIpfsSwTimeout(data: c.gpointer) callconv(.c) c.gboolean {
+    const state: *IpfsSw = @ptrCast(@alignCast(data));
+    state.result = if (!state.reported_sw_capable)
+        error.OriginNotServiceWorkerCapable
+    else if (!state.sw_registered)
+        error.ServiceWorkerNotRegistered
+    else
+        error.ServiceWorkerFetchNotObserved;
     c.g_main_loop_quit(state.loop);
     return 0; // G_SOURCE_REMOVE
 }

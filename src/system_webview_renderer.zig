@@ -16,6 +16,12 @@
 const std = @import("std");
 const wezig = @import("wezig");
 const seam = wezig.renderer;
+/// Build-time shell options (see `build.zig`'s `ShellBuild`). `sw_patch` is the
+/// COMPILE-TIME flag that decides whether the `service_worker_capable` trait is
+/// wired to the patched WebKitGTK opt-in (true, `-Dsw-patch`) or compiled out to
+/// a no-op (false, the default — the installed stock WebKitGTK exports no such
+/// symbol). ADR-0016 decision 6.
+const shell_options = @import("shell_options");
 
 const c = @cImport({
     @cDefine("__GI_SCANNER__", "1");
@@ -213,16 +219,27 @@ pub const SystemWebviewRenderer = struct {
         //  ServiceWorkerContainer::addRegistration for BOTH scriptURL + scopeURL).
         // The INSTALLED, UNPATCHED WebKitGTK 6.0 header exports NO such symbol
         // (see /usr/include/webkitgtk-6.0/webkit/WebKitSecurityManager.h), so we
-        // MUST NOT reference it here — doing so would fail to link and break
-        // `zig build shell`. Stubbed to a no-op so the seam declaration is
-        // accepted but has no backend effect on stock WebKitGTK (matching
-        // ADR-0016 decision 5: the seam declares the trait uniformly; whether a
-        // backend can HONOUR it varies). The patch + upstream draft this stub
-        // waits on live in the
-        // spike-webkitgtk-sw-scheme-patch-locate-and-draft task sidecar.
+        // MUST NOT reference it on the default build — doing so would fail to
+        // link and break `zig build shell` on the bare CI runner. It is guarded
+        // by the COMPILE-TIME `shell_options.sw_patch` flag: only a build
+        // explicitly linked against the PATCHED WebKitGTK
+        // (`-Dsw-patch -Dsw-webkit-prefix=...`) even COMPILES the call, so the
+        // default build never references the symbol (ADR-0016 decision 5: the
+        // seam declares the trait uniformly; whether a backend can HONOUR it
+        // varies). The patch + upstream draft live in the
+        // spike-webkitgtk-sw-scheme-patch-locate-and-draft task sidecar; this
+        // wiring is ACTIVATED by
+        // spike-webkitgtk-sw-scheme-patch-build-and-measure.
         if (traits.service_worker_capable) {
-            // Intentionally no-op on the unpatched backend. Activated by the
-            // deferred build-and-measure task against a patched libwebkitgtk.
+            if (comptime shell_options.sw_patch) {
+                // Patched build: the carried fork patch adds this opt-in,
+                // mirroring `_as_secure`, which widens the http/https gate in
+                // ServiceWorkerContainer::addRegistration so a secure, embedder-
+                // registered scheme (here `ipfs://`) may host a service worker.
+                c.webkit_security_manager_register_uri_scheme_as_service_worker_capable(mgr, scheme);
+            }
+            // Default (unpatched) build: intentionally a no-op — the trait is a
+            // declared-but-unhonoured capability on stock WebKitGTK.
         }
     }
 
@@ -236,6 +253,20 @@ pub const SystemWebviewRenderer = struct {
         const context = c.webkit_web_view_get_context(self.view);
         const mgr = c.webkit_web_context_get_security_manager(context);
         return c.webkit_security_manager_uri_scheme_is_secure(mgr, scheme) != 0;
+    }
+
+    /// Whether WebKitGTK's `WebKitSecurityManager` currently treats `scheme` as
+    /// SERVICE-WORKER-CAPABLE (the carried fork patch's opt-in). Used by the
+    /// PATCHED-only `ipfs-sw-hosting-test` leg to prove the seam's
+    /// `service_worker_capable` declaration reached the real (patched) backend.
+    /// Only compiled on a `-Dsw-patch` build — the query symbol, like the
+    /// register symbol, exists only in the patched header; on the default build
+    /// it returns false without referencing any WebKit symbol (ADR-0016 d.6).
+    pub fn isSchemeServiceWorkerCapable(self: *SystemWebviewRenderer, scheme: [*:0]const u8) bool {
+        if (comptime !shell_options.sw_patch) return false;
+        const context = c.webkit_web_view_get_context(self.view);
+        const mgr = c.webkit_web_context_get_security_manager(context);
+        return c.webkit_security_manager_uri_scheme_is_service_worker_capable(mgr, scheme) != 0;
     }
 
     /// `WebKitURISchemeRequestCallback`: ask the seam handler for the native body

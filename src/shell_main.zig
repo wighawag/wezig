@@ -15,6 +15,10 @@
 //!   - `zig build ipfs-secure-origin-test` -> "ipfs-secure" ->
 //!                                       `ipfsSecureOriginTest` (headless secure-
 //!                                       origin seam-extension proof; xvfb).
+//!   - `zig build ipfs-sw-hosting-test -Dsw-patch` -> "ipfs-sw" ->
+//!                                       `ipfsSwHostingTest` (PATCHED-WebKitGTK
+//!                                       live service-worker-hosting proof; xvfb;
+//!                                       spike-only, ADR-0016 d.6).
 //! WebKitGTK/GTK are linked ONLY into THIS executable; the `wezig` library, the
 //! v0 SDL app, and the golden tests never see them (see `build.zig`).
 
@@ -24,7 +28,7 @@ const options = @import("shell_options");
 
 /// The selected mode. A build-time string keeps ONE selector for N modes (vs a
 /// fan of booleans); each build step sets exactly one value.
-const Mode = enum { interactive, smoke, bridge, scheme, @"ipfs-secure" };
+const Mode = enum { interactive, smoke, bridge, scheme, @"ipfs-secure", @"ipfs-sw" };
 
 pub fn main() !void {
     const mode = std.meta.stringToEnum(Mode, options.mode) orelse {
@@ -40,6 +44,7 @@ pub fn main() !void {
         .bridge => try runVerify("bridge", shell.bridgeTest, "script-message bridge round-tripped both ways"),
         .scheme => try runVerify("scheme", shell.schemeTest, "custom scheme served from native and rendered"),
         .@"ipfs-secure" => try runVerify("ipfs-secure", shell.ipfsSecureOriginTest, "ipfs:// declared a secure origin at the seam and a CID body served+rendered on it"),
+        .@"ipfs-sw" => try runVerify("ipfs-sw", shell.ipfsSwHostingTest, "a service worker registered AND its fetch handler ran on a secure ipfs:// page (patched WebKitGTK)"),
     }
 }
 

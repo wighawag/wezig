@@ -51,10 +51,26 @@ pub const scheme = "ipfs";
 /// The security traits `ipfs://` is registered with (ADR-0015 decision 7): a
 /// first-class SECURE origin (its bytes are hash-verified — the strongest
 /// origin, ADR-0011), CORS-enabled so verified content can be fetched
-/// cross-origin the way a real app needs. NOT `local`. Declared at the seam via
+/// cross-origin the way a real app needs, and SERVICE-WORKER-CAPABLE (ADR-0016)
+/// so a secure `ipfs://` page can host a service worker. NOT `local`. Declared
+/// at the seam via
 /// `Renderer.declareSchemeSecurity(ipfs_scheme.scheme, ipfs_scheme.secure_origin_traits)`,
 /// so a `WezigRenderer` reproduces it after the swap.
-pub const secure_origin_traits = renderer.SchemeSecurityTraits{ .secure = true, .cors = true };
+///
+/// The `service_worker_capable` trait is a DISTINCT gate from `secure` (a secure
+/// origin is NECESSARY but NOT SUFFICIENT for SW hosting — ADR-0016's two-gate
+/// finding). It was left OFF this shipped constant by
+/// `spike-webkitgtk-sw-scheme-patch-locate-and-draft` (which could not build the
+/// patched backend, so flipping it there would only have driven the stubbed
+/// no-op path and muddied the stock-WebKitGTK secure-origin proof). It is turned
+/// ON here by `spike-webkitgtk-sw-scheme-patch-build-and-measure`, which BUILT
+/// the patched WebKitGTK and proved ONE live SW on a secure `ipfs://` page
+/// end-to-end (`zig build ipfs-sw-hosting-test -Dsw-patch`, off the core gate).
+/// On an UNPATCHED backend the trait is a declared-but-unhonoured no-op
+/// (ADR-0016 decision 5: the seam declares the capability uniformly; whether a
+/// backend HONOURS it varies), so flipping it here changes nothing on stock
+/// WebKitGTK, the bare CI runner, or the existing `ipfs-secure-origin-test` leg.
+pub const secure_origin_traits = renderer.SchemeSecurityTraits{ .secure = true, .cors = true, .service_worker_capable = true };
 
 /// A single resolved CID: where its bytes come from (`source_url` — an untrusted
 /// gateway/mirror; transport is orthogonal to verification) and what they must
@@ -324,10 +340,18 @@ test "ipfs://: a request for an unknown CID is not served as if verified" {
     try testing.expect(resolution == .unknown_cid);
 }
 
-test "ipfs://: the secure-origin traits are exactly secure+CORS (not local)" {
+test "ipfs://: the secure-origin traits are secure+CORS+service-worker-capable (not local)" {
     // The declared traits are a stable, reviewable constant: ipfs:// is a secure,
-    // CORS-enabled origin but NOT local (ADR-0015 decision 7).
+    // CORS-enabled origin but NOT local (ADR-0015 decision 7). It is ALSO
+    // service-worker-capable (ADR-0016): now that the carried WebKitGTK fork
+    // patch is built + a live SW was proven on a secure `ipfs://` page by
+    // `spike-webkitgtk-sw-scheme-patch-build-and-measure`, the shipped constant
+    // carries the `service_worker_capable` trait so a `WezigRenderer` (no patch)
+    // and the patched WebKitGTK backend both host SWs on `ipfs://`. On an
+    // unpatched backend the trait is a declared-but-unhonoured no-op (ADR-0016
+    // decision 5), so flipping it changes nothing on stock WebKitGTK.
     try testing.expect(secure_origin_traits.secure);
     try testing.expect(secure_origin_traits.cors);
     try testing.expect(!secure_origin_traits.local);
+    try testing.expect(secure_origin_traits.service_worker_capable);
 }

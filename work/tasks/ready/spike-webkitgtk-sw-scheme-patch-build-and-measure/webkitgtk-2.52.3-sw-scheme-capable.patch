@@ -1,0 +1,277 @@
+--- a/Source/WebCore/workers/service/ServiceWorkerContainer.cpp	2026-07-20 06:22:11.666423657 +0100
++++ b/Source/WebCore/workers/service/ServiceWorkerContainer.cpp	2026-07-20 06:22:18.490539766 +0100
+@@ -206,7 +206,7 @@
+ 
+     RefPtr page = document ? document->page() : nullptr;
+     jobData.isFromServiceWorkerPage = page && page->isServiceWorkerPage();
+-    if (!jobData.scriptURL.protocolIsInHTTPFamily() && !jobData.isFromServiceWorkerPage) {
++    if (!jobData.scriptURL.protocolIsInHTTPFamily() && !jobData.isFromServiceWorkerPage && !LegacySchemeRegistry::shouldTreatURLSchemeAsServiceWorkerCapable(jobData.scriptURL.protocol())) {
+         CONTAINER_RELEASE_LOG_ERROR("addRegistration: Invalid scriptURL scheme is not HTTP or HTTPS");
+         promise->reject(Exception { ExceptionCode::TypeError, "serviceWorker.register() must be called with a script URL whose protocol is either HTTP or HTTPS"_s });
+         return;
+@@ -224,7 +224,7 @@
+     else
+         jobData.scopeURL = URL(jobData.scriptURL, "./"_s);
+ 
+-    if (!jobData.scopeURL.isNull() && !jobData.scopeURL.protocolIsInHTTPFamily() && !jobData.isFromServiceWorkerPage) {
++    if (!jobData.scopeURL.isNull() && !jobData.scopeURL.protocolIsInHTTPFamily() && !jobData.isFromServiceWorkerPage && !LegacySchemeRegistry::shouldTreatURLSchemeAsServiceWorkerCapable(jobData.scopeURL.protocol())) {
+         CONTAINER_RELEASE_LOG_ERROR("addRegistration: scopeURL scheme is not HTTP or HTTPS");
+         promise->reject(Exception { ExceptionCode::TypeError, "Scope URL provided to serviceWorker.register() must be either HTTP or HTTPS"_s });
+         return;
+--- a/Source/WebCore/platform/LegacySchemeRegistry.cpp	2026-07-20 06:21:16.209480128 +0100
++++ b/Source/WebCore/platform/LegacySchemeRegistry.cpp	2026-07-20 06:21:53.634116851 +0100
+@@ -274,6 +274,20 @@
+     return schemes;
+ }
+ 
++static std::span<const ASCIILiteral> builtinServiceWorkerCapableSchemes()
++{
++    // Default none: this trait is opt-in only (wezig ADR-0016).
++    static constexpr std::array<ASCIILiteral, 0> schemes { };
++    return schemes;
++}
++
++static URLSchemesMap& serviceWorkerCapableSchemes()
++{
++    ASSERT(isMainThread());
++    static auto schemes = makeNeverDestroyedSchemeSet(builtinServiceWorkerCapableSchemes);
++    return schemes;
++}
++
+ static URLSchemesMap& CORSEnabledSchemes()
+ {
+     ASSERT(isMainThread());
+@@ -467,6 +481,25 @@
+     return !scheme.isNull() && CORSEnabledSchemes().contains<StringViewHashTranslator>(scheme);
+ }
+ 
++void LegacySchemeRegistry::registerURLSchemeAsServiceWorkerCapable(const String& scheme)
++{
++    ASSERT(!isInNetworkProcess());
++    if (scheme.isNull())
++        return;
++    serviceWorkerCapableSchemes().add(scheme);
++}
++
++bool LegacySchemeRegistry::shouldTreatURLSchemeAsServiceWorkerCapable(StringView scheme)
++{
++    ASSERT(!isInNetworkProcess());
++    return !scheme.isNull() && serviceWorkerCapableSchemes().contains<StringViewHashTranslator>(scheme);
++}
++
++Vector<String> LegacySchemeRegistry::allURLSchemesRegisteredAsServiceWorkerCapable()
++{
++    return copyToVector(serviceWorkerCapableSchemes());
++}
++
+ Vector<String> LegacySchemeRegistry::allURLSchemesRegisteredAsCORSEnabled()
+ {
+     ASSERT(!isInNetworkProcess());
+--- a/Source/WebKit/UIProcess/API/glib/WebKitSecurityManager.cpp	2026-07-20 06:22:11.670423725 +0100
++++ b/Source/WebKit/UIProcess/API/glib/WebKitSecurityManager.cpp	2026-07-20 06:22:42.762952760 +0100
+@@ -47,7 +47,8 @@
+     SecurityPolicyDisplayIsolated,
+     SecurityPolicySecure,
+     SecurityPolicyCORSEnabled,
+-    SecurityPolicyEmptyDocument
++    SecurityPolicyEmptyDocument,
++    SecurityPolicyServiceWorkerCapable
+ } SecurityPolicy;
+ 
+ struct _WebKitSecurityManagerPrivate {
+@@ -100,6 +101,10 @@
+         WebCore::LegacySchemeRegistry::registerURLSchemeAsEmptyDocument(urlScheme);
+         processPool->registerURLSchemeAsEmptyDocument(urlScheme);
+         break;
++    case SecurityPolicyServiceWorkerCapable:
++        WebCore::LegacySchemeRegistry::registerURLSchemeAsServiceWorkerCapable(urlScheme);
++        processPool->registerURLSchemeAsServiceWorkerCapable(urlScheme);
++        break;
+     }
+ }
+ 
+@@ -120,6 +125,8 @@
+         return WebCore::LegacySchemeRegistry::shouldTreatURLSchemeAsCORSEnabled(urlScheme);
+     case SecurityPolicyEmptyDocument:
+         return WebCore::LegacySchemeRegistry::shouldLoadURLSchemeAsEmptyDocument(urlScheme);
++    case SecurityPolicyServiceWorkerCapable:
++        return WebCore::LegacySchemeRegistry::shouldTreatURLSchemeAsServiceWorkerCapable(urlScheme);
+     }
+ 
+     return false;
+@@ -312,6 +319,50 @@
+ }
+ 
+ /**
++ * webkit_security_manager_register_uri_scheme_as_service_worker_capable:
++ * @security_manager: a #WebKitSecurityManager
++ * @scheme: a URI scheme
++ *
++ * Register @scheme as a service-worker-capable scheme.
++ *
++ * This means that a secure origin using this scheme may host a service worker
++ * (navigator.serviceWorker.register()), which is otherwise restricted to HTTP
++ * and HTTPS. The scheme should already be registered as secure. This is an
++ * opt-in (default none): stock behaviour is unchanged unless an application
++ * registers a scheme here (wezig ADR-0016; corroborated by Tauri #13031).
++ *
++ * Since: 2.52
++ */
++void webkit_security_manager_register_uri_scheme_as_service_worker_capable(WebKitSecurityManager* manager, const char* scheme)
++{
++    g_return_if_fail(WEBKIT_IS_SECURITY_MANAGER(manager));
++    g_return_if_fail(scheme);
++
++    registerSecurityPolicyForURIScheme(manager, scheme, SecurityPolicyServiceWorkerCapable);
++}
++
++/**
++ * webkit_security_manager_uri_scheme_is_service_worker_capable:
++ * @security_manager: a #WebKitSecurityManager
++ * @scheme: a URI scheme
++ *
++ * Whether @scheme is considered as a service-worker-capable scheme.
++ *
++ * See also webkit_security_manager_register_uri_scheme_as_service_worker_capable().
++ *
++ * Returns: %TRUE if @scheme can host a service worker or %FALSE otherwise.
++ *
++ * Since: 2.52
++ */
++gboolean webkit_security_manager_uri_scheme_is_service_worker_capable(WebKitSecurityManager* manager, const char* scheme)
++{
++    g_return_val_if_fail(WEBKIT_IS_SECURITY_MANAGER(manager), FALSE);
++    g_return_val_if_fail(scheme, FALSE);
++
++    return checkSecurityPolicyForURIScheme(scheme, SecurityPolicyServiceWorkerCapable);
++}
++
++/**
+  * webkit_security_manager_register_uri_scheme_as_empty_document:
+  * @security_manager: a #WebKitSecurityManager
+  * @scheme: a URI scheme
+--- a/Source/WebKit/UIProcess/API/glib/WebKitSecurityManager.h.in	2026-07-20 06:22:11.670423725 +0100
++++ b/Source/WebKit/UIProcess/API/glib/WebKitSecurityManager.h.in	2026-07-20 06:22:53.031127477 +0100
+@@ -89,6 +89,14 @@
+                                                                  const gchar           *scheme);
+ 
+ WEBKIT_API void
++webkit_security_manager_register_uri_scheme_as_service_worker_capable (WebKitSecurityManager *security_manager,
++                                                                 const gchar           *scheme);
++
++WEBKIT_API gboolean
++webkit_security_manager_uri_scheme_is_service_worker_capable    (WebKitSecurityManager *security_manager,
++                                                                 const gchar           *scheme);
++
++WEBKIT_API void
+ webkit_security_manager_register_uri_scheme_as_empty_document   (WebKitSecurityManager *security_manager,
+                                                                  const gchar           *scheme);
+ 
+--- a/Source/WebKit/UIProcess/WebProcessPool.cpp	2026-07-20 06:22:11.674423793 +0100
++++ b/Source/WebKit/UIProcess/WebProcessPool.cpp	2026-07-20 06:23:16.931534160 +0100
+@@ -1018,6 +1018,7 @@
+     parameters.urlSchemesForWhichDomainRelaxationIsForbidden = copyToVector(m_schemesToSetDomainRelaxationForbiddenFor);
+     parameters.urlSchemesRegisteredAsDisplayIsolated = copyToVector(m_schemesToRegisterAsDisplayIsolated);
+     parameters.urlSchemesRegisteredAsCORSEnabled = copyToVector(m_schemesToRegisterAsCORSEnabled);
++    parameters.urlSchemesRegisteredAsServiceWorkerCapable = copyToVector(m_schemesToRegisterAsServiceWorkerCapable);
+     parameters.urlSchemesRegisteredAsAlwaysRevalidated = copyToVector(m_schemesToRegisterAsAlwaysRevalidated);
+     parameters.urlSchemesRegisteredAsCachePartitioned = copyToVector(m_schemesToRegisterAsCachePartitioned);
+     parameters.urlSchemesRegisteredAsCanDisplayOnlyIfCanRequest = copyToVector(m_schemesToRegisterAsCanDisplayOnlyIfCanRequest);
+@@ -1638,6 +1639,12 @@
+     sendToAllProcesses(Messages::WebProcess::RegisterURLSchemeAsCORSEnabled(urlScheme));
+ }
+ 
++void WebProcessPool::registerURLSchemeAsServiceWorkerCapable(const String& urlScheme)
++{
++    m_schemesToRegisterAsServiceWorkerCapable.add(urlScheme);
++    sendToAllProcesses(Messages::WebProcess::RegisterURLSchemeAsServiceWorkerCapable(urlScheme));
++}
++
+ void WebProcessPool::registerGlobalURLSchemeAsHavingCustomProtocolHandlers(const String& urlScheme)
+ {
+     if (!urlScheme)
+--- a/Source/WebKit/UIProcess/WebProcessPool.h	2026-07-20 06:22:11.674423793 +0100
++++ b/Source/WebKit/UIProcess/WebProcessPool.h	2026-07-20 06:23:08.207385710 +0100
+@@ -301,6 +301,7 @@
+ #endif
+     void registerURLSchemeAsDisplayIsolated(const String&);
+     void registerURLSchemeAsCORSEnabled(const String&);
++    void registerURLSchemeAsServiceWorkerCapable(const String&);
+     void registerURLSchemeAsCachePartitioned(const String&);
+     void registerURLSchemeAsCanDisplayOnlyIfCanRequest(const String&);
+ 
+@@ -826,6 +827,7 @@
+     HashSet<String> m_schemesToSetDomainRelaxationForbiddenFor;
+     HashSet<String> m_schemesToRegisterAsDisplayIsolated;
+     HashSet<String> m_schemesToRegisterAsCORSEnabled;
++    HashSet<String> m_schemesToRegisterAsServiceWorkerCapable;
+     HashSet<String> m_schemesToRegisterAsAlwaysRevalidated;
+     HashSet<String> m_schemesToRegisterAsCachePartitioned;
+     HashSet<String> m_schemesToRegisterAsCanDisplayOnlyIfCanRequest;
+--- a/Source/WebKit/WebProcess/WebProcess.cpp	2026-07-20 06:22:11.678423861 +0100
++++ b/Source/WebKit/WebProcess/WebProcess.cpp	2026-07-20 06:23:31.355779605 +0100
+@@ -644,6 +644,9 @@
+     for (auto& scheme : parameters.urlSchemesRegisteredAsCORSEnabled)
+         LegacySchemeRegistry::registerURLSchemeAsCORSEnabled(scheme);
+ 
++    for (auto& scheme : parameters.urlSchemesRegisteredAsServiceWorkerCapable)
++        LegacySchemeRegistry::registerURLSchemeAsServiceWorkerCapable(scheme);
++
+     for (auto& scheme : parameters.urlSchemesRegisteredAsAlwaysRevalidated)
+         registerURLSchemeAsAlwaysRevalidated(scheme);
+ 
+@@ -930,6 +933,14 @@
+     ensureNetworkProcessConnection().connection().send(Messages::NetworkConnectionToWebProcess::RegisterURLSchemesAsCORSEnabled({ urlScheme }), 0);
+ }
+ 
++void WebProcess::registerURLSchemeAsServiceWorkerCapable(const String& urlScheme)
++{
++    // The gate this feeds (ServiceWorkerContainer::addRegistration) runs in the
++    // web process, so the WebCore registry here is what matters; no network-
++    // process propagation is needed (unlike CORS).
++    LegacySchemeRegistry::registerURLSchemeAsServiceWorkerCapable(urlScheme);
++}
++
+ void WebProcess::registerURLSchemeAsAlwaysRevalidated(const String& urlScheme) const
+ {
+     LegacySchemeRegistry::registerURLSchemeAsAlwaysRevalidated(urlScheme);
+--- a/Source/WebKit/WebProcess/WebProcess.h	2026-07-20 06:22:11.678423861 +0100
++++ b/Source/WebKit/WebProcess/WebProcess.h	2026-07-20 06:23:21.815617268 +0100
+@@ -609,6 +609,7 @@
+ #endif
+     void registerURLSchemeAsDisplayIsolated(const String&) const;
+     void registerURLSchemeAsCORSEnabled(const String&);
++    void registerURLSchemeAsServiceWorkerCapable(const String&);
+     void registerURLSchemeAsAlwaysRevalidated(const String&) const;
+     void registerURLSchemeAsCachePartitioned(const String&) const;
+     void registerURLSchemeAsCanDisplayOnlyIfCanRequest(const String&) const;
+--- a/Source/WebKit/WebProcess/WebProcess.messages.in	2026-07-20 06:22:11.682423929 +0100
++++ b/Source/WebKit/WebProcess/WebProcess.messages.in	2026-07-20 06:23:35.919857270 +0100
+@@ -46,6 +46,7 @@
+ #endif
+     RegisterURLSchemeAsDisplayIsolated(String scheme)
+     RegisterURLSchemeAsCORSEnabled(String scheme)
++    RegisterURLSchemeAsServiceWorkerCapable(String scheme)
+     RegisterURLSchemeAsCachePartitioned(String scheme)
+     RegisterURLSchemeAsCanDisplayOnlyIfCanRequest(String scheme)
+ 
+--- a/Source/WebKit/Shared/WebProcessCreationParameters.h	2026-07-20 06:22:11.682423929 +0100
++++ b/Source/WebKit/Shared/WebProcessCreationParameters.h	2026-07-20 06:23:40.635937521 +0100
+@@ -98,6 +98,7 @@
+ #endif
+     Vector<String> urlSchemesRegisteredAsDisplayIsolated;
+     Vector<String> urlSchemesRegisteredAsCORSEnabled;
++    Vector<String> urlSchemesRegisteredAsServiceWorkerCapable;
+     Vector<String> urlSchemesRegisteredAsAlwaysRevalidated;
+     Vector<String> urlSchemesRegisteredAsCachePartitioned;
+     Vector<String> urlSchemesRegisteredAsCanDisplayOnlyIfCanRequest;
+--- a/Source/WebKit/Shared/WebProcessCreationParameters.serialization.in	2026-07-20 06:22:11.686423997 +0100
++++ b/Source/WebKit/Shared/WebProcessCreationParameters.serialization.in	2026-07-20 06:23:46.156033791 +0100
+@@ -42,6 +42,7 @@
+ #endif
+     Vector<String> urlSchemesRegisteredAsDisplayIsolated;
+     Vector<String> urlSchemesRegisteredAsCORSEnabled;
++    Vector<String> urlSchemesRegisteredAsServiceWorkerCapable;
+     Vector<String> urlSchemesRegisteredAsAlwaysRevalidated;
+     Vector<String> urlSchemesRegisteredAsCachePartitioned;
+     Vector<String> urlSchemesRegisteredAsCanDisplayOnlyIfCanRequest;
