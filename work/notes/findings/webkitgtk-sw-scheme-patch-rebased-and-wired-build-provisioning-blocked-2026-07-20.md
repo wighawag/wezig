@@ -45,3 +45,25 @@ Run `work/tasks/ready/spike-webkitgtk-sw-scheme-patch-build-and-measure/build-pa
 ## Why the residual split (the environment reason, again)
 
 locate-and-draft split the spike because the dev box could not build WebKitGTK at all. On this provisioned host the resources exist, so EVERYTHING except the privileged dep install + the compile is now done and green. The residual gate is narrower than ADR-0016 anticipated: not "no capable machine" but "the capable machine needs one `sudo apt-get install` a human must run". The build script reduces that to a single command; once run, the two build-gated acceptance criteria close and the keep-fork-vs-defer-vs-shim ratification data (patch size + upstream draft from locate-and-draft; rebase friction measured here; build time from the script) is complete.
+
+---
+
+## UPDATE 2026-07-20 — the patched build RAN; the fork's real result measured
+
+The privileged install + build was run by a human on the reference host. The two build-gated criteria are now RESOLVED, and the resolution REVISES the plan (see ADR-0018).
+
+### Build: SUCCEEDED
+- Patched WebKitGTK 2.52.3 built in **57m03s (`build_seconds: 3423`) on 16 cores** (host spec in `host-spec.txt`), into the private prefix. Build-time fork-cost datum.
+- Build deps exceeded the paper list: configure also needed `-DENABLE_SPEECH_SYNTHESIS=OFF` (flite), `-DUSE_LIBBACKTRACE=OFF` (libbacktrace), the `unifdef` build tool, and `-DENABLE_WEBDRIVER=OFF` — surfacing one at a time across repeated configures. Only knowable by building; the script is updated with the full working set.
+- Patched symbols ARE in the built lib: `nm -D libwebkitgtk-6.0.so* | grep -c service_worker_capable` = 6. The fork works at the binary level.
+
+### Live SW proof: register() UNBLOCKED, but SW `fetch` NOT observed (the finding)
+`zig build ipfs-sw-hosting-test -Dsw-patch -Dsw-webkit-prefix=<prefix>` against the patched lib ran to a verdict (it did NOT hang): **`ServiceWorkerFetchNotObserved`**.
+- Proven: `serviceWorker.register()` on the `ipfs://` origin is NO LONGER REJECTED on the patched build — the exact block stock WebKitGTK enforces (and this patch targets) is removed. The fork's primary claim holds.
+- Not achieved: a full SW `fetch`-interception round-trip. The test registers the SW, `clients.claim()`s, fetches a sentinel, expects the SW `fetch` marker back; the marker never arrived within 60s.
+- Not diagnosed further: WebKitGTK does not surface the SW-internal reason without content-process debugging. Distinguishing a SECOND WebKit gate on SW-fetch-interception for a custom scheme vs a content-process propagation gap vs an SW-on-custom-scheme client-control semantic is deep WebKit-internal work — the "fighting an engine we don't control" cost the ratification weighs.
+
+### Ratification: DEFER to `WezigRenderer` (ADR-0018)
+Measured: the minimal patch is **necessary but not sufficient** (unblocks register, not fetch); full SW-hosting on a custom scheme exceeds it. Weighed against a ~1hr per-release fork build + maintenance tail for an INCOMPLETE capability, the decision (ADR-0018) is: do NOT carry the fork; make `WezigRenderer` the home for `ipfs://` SW hosting; keep the webview backend with this feature ACCEPTED as degraded/unavailable. The rebased patch + `-Dsw-patch`/`-Dsw-webkit-prefix` stay reproducible EVIDENCE (spike-only, never release-wired), not an adopted fork. The upstream proposal may still be filed; wezig does not wait on it.
+
+**Acceptance-criteria status (final):** (1) builds + time recorded ✅; (2) SW `fetch` observed end-to-end ❌ — register() unblocked but fetch not observed; per ADR-0018 this is the DECISION-DRIVING finding, not a defect to force green; (3) fork cost measured (build 57m + rebase friction) ✅; (4) seam contract unchanged, `chrome_conformance` green ✅; (5) spike artifact, not release-wired ✅. Four of five met; criterion 2 resolved as "measured negative → defer to `WezigRenderer`".

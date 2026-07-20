@@ -35,7 +35,7 @@ echo "== 1/6  Install build dependencies (needs sudo) =="
 # another distro. These are BUILD deps only; the spike lib installs to $PREFIX.
 sudo apt-get update
 sudo apt-get install -y \
-  build-essential cmake ninja-build ruby gperf \
+  build-essential cmake ninja-build ruby gperf unifdef \
   libgcrypt20-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
   libseccomp-dev libwpe-1.0-dev libwpebackend-fdo-1.0-dev libmanette-0.2-dev \
   libgbm-dev libwoff-dev libavif-dev libjxl-dev liblcms2-dev libxkbcommon-dev \
@@ -65,7 +65,7 @@ echo "== 4/6  Configure (spike config: heavy optional features off) =="
 cmake -S "$SRC" -B "$BUILD" -GNinja -DPORT=GTK -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_INSTALL_PREFIX="$PREFIX" \
   -DENABLE_MINIBROWSER=OFF -DENABLE_DOCUMENTATION=OFF -DENABLE_INTROSPECTION=OFF \
-  -DENABLE_GAMEPAD=OFF -DENABLE_JOURNALD_LOG=OFF -DUSE_GTK4=ON
+  -DENABLE_GAMEPAD=OFF -DENABLE_JOURNALD_LOG=OFF -DENABLE_SPEECH_SYNTHESIS=OFF -DUSE_LIBBACKTRACE=OFF -DENABLE_WEBDRIVER=OFF -DUSE_GTK4=ON
 
 echo "== 5/6  Build + install (this is the multi-hour compile) =="
 START=$(date +%s)

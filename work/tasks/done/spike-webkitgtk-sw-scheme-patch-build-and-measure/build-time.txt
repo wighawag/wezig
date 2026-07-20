@@ -1,0 +1,4 @@
+build_seconds: 3423
+build_hms: 00:57:03
+host: Linux 6.12.95+deb13-amd64
+cores: 16
