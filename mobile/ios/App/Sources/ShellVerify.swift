@@ -16,12 +16,36 @@
 // WKWebView (the sole WKWebView toucher exposes it) — a rendered page has >1
 // distinct pixel, a blank/failed render is uniform (the desktop scanNonBlank bar).
 //
+// The verify page is a LOCAL, OFFLINE `data:` document (like the start page in
+// WKWebViewShellController) — NOT a live network URL. Using `https://example.com/`
+// made this leg a network-timing flake: on a cold CI simulator the remote fetch
+// could miss the in-app settle window, so `.finished`/non-blank were both false
+// even though the seams worked. A `data:` page loads synchronously offline, fires
+// the full navigation lifecycle THROUGH the seam, and renders visibly non-blank —
+// exercising the exact same three facts deterministically, with no network.
+//
 // Simulator only.
 
 import UIKit
 import WebKit
 
-private let verifyURL = "https://example.com/"
+// A unique token painted into the page AND its title, so the URL-reflection match
+// (host-less `data:` URL) keys off a stable marker rather than the whole blob.
+private let verifyMarker = "WEZIG-VERIFY-OK"
+
+// The offline verify page: dark-on-light body with a bold marker (guarantees the
+// non-blank pixel scan) whose text also carries `verifyMarker` for the reflection
+// match. Percent-encoded into a `data:` URL — no network, deterministic lifecycle.
+private let verifyPageHTML = """
+<!doctype html><html><head><meta name="viewport" \
+content="width=device-width, initial-scale=1"><title>\(verifyMarker)</title></head>
+<body style="margin:0;background:#101828;color:#f4f6fb;font:28px -apple-system;padding:2rem">
+<h1>\(verifyMarker)</h1><p>wezig shell verify page (offline).</p>
+</body></html>
+"""
+
+private let verifyURL = "data:text/html;charset=utf-8,"
+    + (verifyPageHTML.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")
 
 final class ShellVerify {
     private weak var controller: WKWebViewShellController?
@@ -47,16 +71,18 @@ final class ShellVerify {
         // Navigate THROUGH the seam (a .navigate intent), not a raw WKWebView call.
         verifyURL.withCString { wezig_ios_shell_navigate(ctx, $0) }
         // The `.finished` event + non-blank snapshot are checked after the load
-        // settles; give the page a generous beat (offline data: pages are fast,
-        // https pages need the network on the simulator).
-        DispatchQueue.main.asyncAfter(deadline: .now() + 6.0) { [weak self] in
+        // settles. The offline `data:` page loads synchronously, so a short beat
+        // is plenty (no network to wait on).
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
             self?.checkLoadedThenLifecycle()
         }
     }
 
     // The chrome reflected a URL into the field — the seam delivered a load event.
+    // The verify target is a host-less `data:` URL, so match the stable marker the
+    // page carries (present in the reflected data: URL) rather than a URL host.
     func onUrlReflected(_ text: String) {
-        if let want = navigatedURL, text.contains(host(of: want)) {
+        if navigatedURL != nil, text.contains(verifyMarker) {
             finishedReflected = true
         }
     }
@@ -104,10 +130,6 @@ final class ShellVerify {
                 }
             }
         }
-    }
-
-    private func host(of url: String) -> String {
-        return URL(string: url)?.host ?? url
     }
 
     static func imageIsNonBlank(_ image: UIImage) -> Bool {
